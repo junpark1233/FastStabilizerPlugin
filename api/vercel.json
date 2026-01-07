@@ -1,8 +1,0 @@
-{
-  "functions": {
-    "api/trends.js": {
-      "memory": 128,
-      "maxDuration": 10
-    }
-  }
-}
