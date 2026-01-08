@@ -426,26 +426,62 @@ async function fromReddit({ tf, geo, hl }) {
   const titles = [];
   const errors = [];
 
-  // 1) JSON 시도
+  // ✅ RSS/Atom만 사용 (403 noisy 제거 + 더 안정적)
   for (const sub of subs) {
-    const url = `https://www.reddit.com/r/${encodeURIComponent(sub)}/hot.json?limit=50`;
-    const r = await fetchJson(url, {
+    const rssUrl = `https://www.reddit.com/r/${encodeURIComponent(sub)}/hot.rss`;
+    const r = await fetchText(rssUrl, {
       timeoutMs: 8000,
       headers: {
         "User-Agent": "trends-proxy/1.0 (personal use)",
-        "Accept": "application/json",
+        "Accept": "application/rss+xml, application/atom+xml, text/xml;q=0.9, */*;q=0.8",
       },
     });
 
-    if (r.ok && r.json?.data?.children?.length) {
-      for (const c of r.json.data.children) {
-        const t = c?.data?.title;
-        if (t) titles.push(String(t));
-      }
+    if (r.ok && r.text) {
+      const feedTitles = parseFeedTitles(r.text);
+      for (const t of feedTitles) titles.push(String(t));
     } else {
-      errors.push({ sub, jsonStatus: r.status });
+      errors.push({ sub, rssStatus: r.status });
     }
   }
+
+  if (titles.length < 5) {
+    return makeMock(tf, geo, hl, {
+      source: "reddit",
+      note: "reddit RSS 결과 부족/실패 → mock fallback",
+      isMock: true,
+      debug: { errors },
+    });
+  }
+
+  const freq = freqFromTitles(titles, hl);
+  const sorted = Array.from(freq.entries()).sort((a, b) => b[1] - a[1]).slice(0, 80);
+
+  const items = sorted.map(([term, count]) => {
+    const base = count * 18;
+    const series = synthSeries(n, base);
+    return {
+      term,
+      series,
+      score: scoreFromSeries(series),
+      related: [term + " reddit", term + " news", term + " discussion", term + " analysis"].slice(0, 4),
+      links: makeLinks(term, geo, hl),
+    };
+  });
+
+  return {
+    items: topNItems(items, 20),
+    meta: {
+      source: "reddit",
+      isMock: false,
+      seriesIsSynthetic: true,
+      note: "Reddit hot RSS/Atom 제목 토큰 빈도 기반 근사",
+      fetchedAt: nowIso(),
+      debug: errors?.length ? { errors } : undefined,
+    },
+  };
+}
+
 
   // 2) JSON이 거의 다 막혔으면 RSS/Atom fallback
   if (titles.length < 10) {
