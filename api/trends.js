@@ -11,6 +11,9 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization");
   if (req.method === "OPTIONS") return res.status(200).end();
 
+  // ✅ JSON charset 강제 (브라우저/프리티파이어에서 한글 깨짐 방지)
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+
   // CDN cache (개인용 비용/호출수 절감)
   res.setHeader("Cache-Control", "public, s-maxage=60, stale-while-revalidate=300");
 
@@ -51,11 +54,20 @@ export default async function handler(req, res) {
       }
     }
 
-    // 서버측 q 필터
+    // ✅ 서버측 q 필터
     if (q && Array.isArray(payload?.items)) {
       const qq = q.toLowerCase();
       payload.items = payload.items.filter((x) => String(x.term || "").toLowerCase().includes(qq));
       payload.items.forEach((x, i) => (x.rank = i + 1));
+    }
+
+    // ✅ 최종 한번 더 “깨진 문자/이상 토큰” 클린업 (UI에 ‘����’ 안 뜨게)
+    if (Array.isArray(payload?.items)) {
+      payload.items = payload.items
+        .map(cleanItemDeep)
+        .filter((it) => it && isUsableTerm(it.term, hl));
+      payload.items.forEach((x, i) => (x.rank = i + 1));
+      payload.items = payload.items.slice(0, 20);
     }
 
     payload = withMeta(payload, { tookMs: Date.now() - startedAt });
@@ -169,20 +181,105 @@ async function dispatchProvider({ source, tf, geo, hl, cat }) {
 }
 
 /* -----------------------
- * Fetch helpers
+ * Encoding-aware fetch helpers
  * ---------------------- */
+
+// iconv-lite가 있으면 EUC-KR/CP949까지 완벽 디코딩 가능
+let __ICONV = null;
+async function getIconv() {
+  if (__ICONV !== null) return __ICONV;
+  try {
+    const m = await import("iconv-lite");
+    __ICONV = m?.default || m;
+  } catch {
+    __ICONV = undefined;
+  }
+  return __ICONV;
+}
+
+function sniffCharsetFromHeaders(headers) {
+  const ct = headers?.get?.("content-type") || "";
+  const m = /charset\s*=\s*([^\s;]+)/i.exec(ct);
+  return m ? String(m[1]).trim() : "";
+}
+function sniffCharsetFromXmlProlog(bytes) {
+  try {
+    // xml prolog는 ASCII 범위라 latin1로 대충 읽어도 됨
+    const head = new TextDecoder("latin1").decode(bytes.slice(0, 2048));
+    const m = /<\?xml[^>]*encoding\s*=\s*["']([^"']+)["']/i.exec(head);
+    return m ? String(m[1]).trim() : "";
+  } catch {
+    return "";
+  }
+}
+function normalizeCharsetName(cs) {
+  const x = String(cs || "").toLowerCase().replace(/[_\s]/g, "");
+  if (!x) return "";
+  if (x === "utf8" || x === "utf-8") return "utf-8";
+  if (x === "utf16" || x === "utf-16") return "utf-16";
+  if (x === "utf16le" || x === "utf-16le") return "utf-16le";
+  if (x === "latin1" || x === "iso-8859-1" || x === "iso88591" || x === "windows-1252") return "latin1";
+  if (
+    x === "euc-kr" || x === "euckr" || x === "cp949" || x === "windows-949" ||
+    x === "ksc5601" || x === "ksc_5601-1987" || x === "ksc5601-1987" || x === "ksc_5601_1987"
+  ) return "euc-kr";
+  return x;
+}
+async function decodeBytes(bytes, charset) {
+  const cs = normalizeCharsetName(charset) || "utf-8";
+
+  // node TextDecoder가 지원하는 범위: utf-8/utf-16/latin1
+  if (cs === "utf-8" || cs === "utf8") return new TextDecoder("utf-8").decode(bytes);
+  if (cs === "utf-16" || cs === "utf-16le") return new TextDecoder("utf-16le").decode(bytes);
+  if (cs === "latin1") return new TextDecoder("latin1").decode(bytes);
+
+  // euc-kr/cp949 등은 iconv-lite가 있으면 복구
+  if (cs === "euc-kr" || cs === "cp949") {
+    const iconv = await getIconv();
+    if (iconv?.decode) {
+      // iconv-lite는 Buffer 필요
+      return iconv.decode(Buffer.from(bytes), "cp949"); // cp949가 euc-kr 상위호환
+    }
+    // iconv 없으면 어쩔 수 없이 utf-8로(대신 깨진 토큰 제거가 뒤에서 동작)
+    return new TextDecoder("utf-8").decode(bytes);
+  }
+
+  // 기타는 utf-8 fallback
+  return new TextDecoder("utf-8").decode(bytes);
+}
+
+function sanitizeText(s) {
+  if (typeof s !== "string") s = String(s ?? "");
+  // 제어문자 제거(개행/탭은 유지)
+  s = s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "");
+  // U+FFFD(�) 제거(깨짐 방지)
+  s = s.replace(/\uFFFD/g, "");
+  return s;
+}
+
 async function fetchText(url, opts = {}) {
   const timeoutMs = clampInt(opts.timeoutMs ?? 9000, 1000, 20000);
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
+
   try {
     const r = await fetch(url, { ...opts, signal: controller.signal });
-    const text = await r.text();
+    const ab = await r.arrayBuffer();
+    const bytes = new Uint8Array(ab);
+
+    const hCharset = sniffCharsetFromHeaders(r.headers);
+    const xCharset = sniffCharsetFromXmlProlog(bytes);
+    const charset = normalizeCharsetName(hCharset || xCharset || "utf-8");
+
+    let text = await decodeBytes(bytes, charset);
+    text = sanitizeText(text);
+
     return { ok: r.ok, status: r.status, text, headers: r.headers };
   } finally {
     clearTimeout(t);
   }
 }
+
 async function fetchJson(url, opts = {}) {
   const r = await fetchText(url, opts);
   if (!r.ok) return { ...r, json: null };
@@ -192,6 +289,7 @@ async function fetchJson(url, opts = {}) {
     return { ...r, json: null };
   }
 }
+
 function clampInt(n, min, max) {
   const x = Number.isFinite(+n) ? +n : min;
   return Math.min(max, Math.max(min, x));
@@ -213,12 +311,19 @@ function decodeXml(s) {
 function stripHtml(s) {
   return String(s).replace(/<[^>]+>/g, "");
 }
+function cleanDisplayString(s) {
+  return sanitizeText(stripHtml(decodeXml(String(s || "")))).trim();
+}
+
 function parseFeedTitles(xmlText) {
   if (!xmlText || typeof xmlText !== "string") return [];
   const titles = [];
   const pushTitle = (raw) => {
-    const t = stripHtml(decodeXml(raw)).trim();
-    if (t && t.length >= 2) titles.push(t);
+    const t = cleanDisplayString(raw);
+    if (!t) return;
+    // 깨진 문자/의미없는 토큰 제거
+    if (t.length < 2) return;
+    titles.push(t);
   };
 
   let m;
@@ -249,8 +354,9 @@ function buildStop(hl) {
   for (const w of ko) set.add(w);
   return set;
 }
+
 function tokenizeMixed(text, hl) {
-  const s = String(text || "");
+  const s = sanitizeText(String(text || ""));
   const stop = buildStop(hl);
 
   const tokens = [];
@@ -273,16 +379,22 @@ function tokenizeMixed(text, hl) {
     if (tok.length < 2) continue;
     if (/^\d+$/.test(tok)) continue;
     if (stop.has(tok)) continue;
+    // 깨진 문자 포함 제거
+    if (tok.includes("�")) continue;
     out.push(tok);
   }
   return out;
 }
+
 function deriveFromTitles(titles, hl, maxTerms = 80) {
   const freq = new Map();
   const related = new Map();
 
   for (const title of titles) {
-    const toks = Array.from(new Set(tokenizeMixed(title, hl)));
+    const safeTitle = sanitizeText(String(title || ""));
+    if (!safeTitle) continue;
+
+    const toks = Array.from(new Set(tokenizeMixed(safeTitle, hl)));
     for (const t of toks) freq.set(t, (freq.get(t) || 0) + 1);
 
     for (let i = 0; i < toks.length; i++) {
@@ -332,17 +444,77 @@ function scoreFromSeries(series) {
   return Math.round(last + delta * 0.6);
 }
 function makeLinks(term, geo, hl) {
+  const t = sanitizeText(String(term || ""));
   return {
-    youtube: "https://www.youtube.com/results?search_query=" + encodeURIComponent(term),
-    naver: "https://search.naver.com/search.naver?query=" + encodeURIComponent(term),
-    google: "https://www.google.com/search?q=" + encodeURIComponent(term),
-    news: "https://news.google.com/search?q=" + encodeURIComponent(term) + `&hl=${encodeURIComponent(hl)}&gl=${encodeURIComponent(geo)}`,
+    youtube: "https://www.youtube.com/results?search_query=" + encodeURIComponent(t),
+    naver: "https://search.naver.com/search.naver?query=" + encodeURIComponent(t),
+    google: "https://www.google.com/search?q=" + encodeURIComponent(t),
+    news: "https://news.google.com/search?q=" + encodeURIComponent(t) + `&hl=${encodeURIComponent(hl)}&gl=${encodeURIComponent(geo)}`,
   };
 }
 function topN(items, n = 20) {
   const arr = Array.isArray(items) ? items.slice() : [];
   arr.sort((a, b) => (b.score || 0) - (a.score || 0));
   return arr.slice(0, n).map((x, i) => ({ ...x, rank: i + 1 }));
+}
+
+/* -----------------------
+ * Deep cleanup to prevent broken chips
+ * ---------------------- */
+function cleanArrayStrings(arr, hl, limit = 12) {
+  const out = [];
+  const seen = new Set();
+  for (const v of arr || []) {
+    const s = sanitizeText(String(v || "")).trim();
+    if (!s) continue;
+    if (seen.has(s)) continue;
+    if (!isUsableTerm(s, hl)) continue;
+    seen.add(s);
+    out.push(s);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+function cleanItemDeep(it) {
+  if (!it || typeof it !== "object") return null;
+  const term = sanitizeText(String(it.term || "")).trim();
+  if (!term) return null;
+
+  const out = { ...it, term };
+  if (typeof out.searchTerm === "string") out.searchTerm = sanitizeText(out.searchTerm).trim();
+  if (Array.isArray(out.tags)) out.tags = cleanArrayStrings(out.tags, "en", 8);
+  if (Array.isArray(out.related)) out.related = cleanArrayStrings(out.related, "ko", 12);
+  if (out.links && typeof out.links === "object") {
+    // 링크는 term 기반으로 재생성(깨진 term 링크 방지)
+    out.links = makeLinks(out.searchTerm || out.term, "KR", "ko");
+  }
+  return out;
+}
+
+// hl=ko일 때: 한글/숫자/공백/기본문장부호 비율이 너무 낮으면 제거
+function isUsableTerm(s, hl) {
+  if (!s) return false;
+  const t = String(s);
+
+  if (t.includes("\uFFFD") || t.includes("�")) return false;
+  if (t.length < 2) return false;
+  if (t.length > 60) return false;
+
+  // 완전 이상한 기호 덩어리 제거
+  const letters = (t.match(/[가-힣A-Za-z0-9]/g) || []).length;
+  if (letters < Math.min(2, t.length)) {
+    // 예: "::::" 같은 거
+    if (t.replace(/\s+/g, "").length >= 4) return false;
+  }
+
+  if (hl === "ko") {
+    const hangul = (t.match(/[가-힣]/g) || []).length;
+    // ko인데 한글이 전혀 없으면(특히 related에서) 제거
+    if (hangul === 0) return false;
+  }
+
+  return true;
 }
 
 /* -----------------------
@@ -385,14 +557,13 @@ function makeMock(tf, geo, hl, metaExtra = {}) {
 /* -----------------------
  * storyKR (썰최적화 엔진)
  * ---------------------- */
+// ---- 아래부터는 네 기존 코드 로직을 그대로 유지(중간중간 sanitize만 추가) ----
+
 async function fromStoryKR({ tf, geo, hl }) {
   const n = bucketCount(tf);
-
   const debug = { steps: {}, errors: [] };
 
-  // 1) 원천 수집(넓게)
   const raw = await gatherRawSignals({ geo, hl, debug });
-  // raw: [{ term, weight, sources: Set }]
   if (raw.length < 8) {
     return makeMock(tf, geo, hl, {
       source: "storyKR",
@@ -402,28 +573,17 @@ async function fromStoryKR({ tf, geo, hl }) {
     });
   }
 
-  // 2) 썰 후보 생성(상황형)
   const candidates = makeStoryCandidates(raw, { hl });
   debug.steps.candidateCount = candidates.length;
 
-  // 3) 1차 프리랭크(변환 품질/멀티소스 합의)
   candidates.sort((a, b) => b.preScore - a.preScore);
-  const preTop = candidates.slice(0, 70); // 여기까진 fetch 없이
+  const preTop = candidates.slice(0, 70);
   debug.steps.preTopCount = preTop.length;
 
-  // 4) YouTube 자동완성으로 “수요” 검증 (최대한 조회수 → Demand 가중치 가장 큼)
   const enriched = await enrichWithYouTubeSuggest(preTop, { geo, hl, debug });
 
-  // 5) 최종 점수 계산 + TOP20
   for (const it of enriched) {
-    // Demand(0~100) 45% + StoryFit 35% + Freshness 20%
-    it.score = Math.round(
-      it.demandScore * 0.45 +
-      it.storyFitScore * 0.35 +
-      it.freshnessScore * 0.20
-    );
-
-    // 작은 시계열(서버에서는 근사)
+    it.score = Math.round(it.demandScore * 0.45 + it.storyFitScore * 0.35 + it.freshnessScore * 0.20);
     const base = 60 + it.score * 3;
     it.series = synthSeries(n, base);
     it.links = makeLinks(it.searchTerm || it.term, geo, hl);
@@ -431,12 +591,12 @@ async function fromStoryKR({ tf, geo, hl }) {
 
   enriched.sort((a, b) => (b.score || 0) - (a.score || 0));
   const top = enriched.slice(0, 20).map((it) => ({
-    term: it.term,
-    searchTerm: it.searchTerm,
+    term: sanitizeText(it.term),
+    searchTerm: sanitizeText(it.searchTerm),
     tags: it.tags,
     score: it.score,
     series: it.series,
-    related: it.related,
+    related: cleanArrayStrings(it.related, "ko", 12),
     links: it.links,
   }));
 
@@ -445,9 +605,7 @@ async function fromStoryKR({ tf, geo, hl }) {
     meta: {
       source: "storyKR",
       isMock: false,
-      // 키워드 목록은 live 신호 기반 + suggest 검증(REAL에 가까움)
       keywordsAreLive: true,
-      // 차트는 서버에서 근사(프론트 스냅샷 누적하면 실차트화 가능)
       seriesIsSynthetic: true,
       note: "KR 썰 최적화: (YouTube/Trends/News) 원천 → 상황형 변환 → YouTube 자동완성으로 수요 검증 → TOP20",
       fetchedAt: nowIso(),
@@ -457,7 +615,7 @@ async function fromStoryKR({ tf, geo, hl }) {
 }
 
 async function gatherRawSignals({ geo, hl, debug }) {
-  const out = new Map(); // term -> { weight, sources:Set }
+  const out = new Map();
   const add = (term, w, source) => {
     const t = normalizeKoreanTerm(term);
     if (!t) return;
@@ -467,7 +625,6 @@ async function gatherRawSignals({ geo, hl, debug }) {
     out.set(t, v);
   };
 
-  // (a) Google Trends realtime RSS
   try {
     const url = `https://trends.google.com/trends/trendingsearches/realtime/rss?geo=${encodeURIComponent(geo)}&category=all`;
     const r = await fetchText(url, { timeoutMs: 9000, headers: { "User-Agent": "trends-proxy/1.0" } });
@@ -480,7 +637,6 @@ async function gatherRawSignals({ geo, hl, debug }) {
     debug.errors.push({ step: "trends", error: e?.message || String(e) });
   }
 
-  // (b) Google News RSS (tokens)
   try {
     const ceid = `${geo}:${hl}`;
     const url = `https://news.google.com/rss?hl=${encodeURIComponent(hl)}&gl=${encodeURIComponent(geo)}&ceid=${encodeURIComponent(ceid)}`;
@@ -495,7 +651,6 @@ async function gatherRawSignals({ geo, hl, debug }) {
     debug.errors.push({ step: "news", error: e?.message || String(e) });
   }
 
-  // (c) YouTube mostPopular (tokens) - 키가 있으면
   try {
     const key = process.env.YT_KEY || process.env.YOUTUBE_API_KEY;
     if (key) {
@@ -508,7 +663,7 @@ async function gatherRawSignals({ geo, hl, debug }) {
 
       const r = await fetchJson(url.toString(), { timeoutMs: 9000 });
       if (r.ok && r.json?.items?.length) {
-        const titles = r.json.items.map((it) => String(it?.snippet?.title || "")).filter(Boolean);
+        const titles = r.json.items.map((it) => sanitizeText(String(it?.snippet?.title || ""))).filter(Boolean);
         const { top } = deriveFromTitles(titles, hl, 120);
         debug.steps.youtubeTokens = top.length;
         top.forEach(({ term, count }, i) => add(term, Math.min(110, count * 22) + (120 - i), "youtube"));
@@ -521,7 +676,6 @@ async function gatherRawSignals({ geo, hl, debug }) {
   }
 
   const arr = Array.from(out.values()).map((x) => ({ term: x.term, weight: x.weight, sources: Array.from(x.sources) }));
-  // 너무 짧거나 의미없는 건 제거
   return arr
     .filter((x) => x.term.length >= 2)
     .filter((x) => /[가-힣]/.test(x.term))
@@ -530,23 +684,23 @@ async function gatherRawSignals({ geo, hl, debug }) {
 
 function normalizeKoreanTerm(term) {
   if (!term) return "";
-  let t = String(term).trim();
+  let t = sanitizeText(String(term)).trim();
   t = t.replace(/\s+/g, " ");
   t = t.replace(/[【】\[\]()<>{}]/g, " ");
   t = t.replace(/\s+/g, " ").trim();
 
-  // 너무 흔한 꼬리/뉴스성 제거(원천을 썰로 바꾸기 전 단계)
   const bad = ["단독", "속보", "공식", "발표", "영상", "인터뷰", "예고", "하이라이트"];
   for (const b of bad) t = t.replace(new RegExp(b, "g"), "");
   t = t.replace(/\s+/g, " ").trim();
 
   if (t.length < 2) return "";
   if (/^\d+$/.test(t)) return "";
+  if (t.includes("�")) return "";
   return t;
 }
 
 function makeDefaultRelated(term) {
-  const base = String(term || "").replace(/\s*썰\s*/g, "").trim();
+  const base = sanitizeText(String(term || "")).replace(/\s*썰\s*/g, "").trim();
   const rel = [
     base + " 썰",
     base + " 카톡",
@@ -555,7 +709,7 @@ function makeDefaultRelated(term) {
     base + " 사이다",
     base + " 공감",
   ];
-  return Array.from(new Set(rel)).slice(0, 8);
+  return cleanArrayStrings(Array.from(new Set(rel)), "ko", 8);
 }
 
 // 연애/일상/직장 트리거(수요 큰 것 위주)
@@ -569,7 +723,6 @@ const TRIG_DAILY = [
   "친구","가족","엄마","아빠","부모","형","누나","오빠","동생","이웃","카페","헬스장","택시","버스","지하철","중고","당근","배달","치킨","편의점","공원",
   "무단횡단","교통","사고","민폐","진상","빌런","술자리","모임","축의금",
 ];
-
 const EMO_TRIG = ["사이다","레전드","충격","정떨어","소름","민망","개빡","빡침","설렘","반전","최악","역대급","현타","눈물","감동"];
 
 function hasAny(s, arr) {
@@ -580,21 +733,17 @@ function scoreStoryFitFromRaw(rawTerm) {
   if (hasAny(rawTerm, TRIG_ROMANCE)) s += 55;
   if (hasAny(rawTerm, TRIG_WORK)) s += 35;
   if (hasAny(rawTerm, TRIG_DAILY)) s += 30;
-  // 고유명사 느낌(한글 2~4자 단독) 감점
   if (/^[가-힣]{2,4}$/.test(rawTerm)) s -= 10;
   return clampInt(s, 0, 100);
 }
 function scoreFreshness(sources) {
-  // 멀티소스 합의가 있으면 가점
   const set = new Set(sources || []);
   const base = 40 + set.size * 20;
   return clampInt(base, 0, 100);
 }
 
 function makeStoryCandidates(rawSignals, { hl }) {
-  // rawSignals: {term, weight, sources[]}
-  const candidates = new Map(); // term -> candidate obj
-
+  const candidates = new Map();
   const add = (obj) => {
     const key = obj.term;
     const prev = candidates.get(key);
@@ -602,18 +751,16 @@ function makeStoryCandidates(rawSignals, { hl }) {
   };
 
   for (const rs of rawSignals) {
-    const raw = rs.term;
+    const raw = sanitizeText(rs.term);
     const srcs = rs.sources || [];
     const baseFit = scoreStoryFitFromRaw(raw);
     const fresh = scoreFreshness(srcs);
     const w = rs.weight || 0;
 
-    // 분류
     const isRomance = hasAny(raw, TRIG_ROMANCE);
     const isWork = hasAny(raw, TRIG_WORK);
     const isDaily = hasAny(raw, TRIG_DAILY) || (!isRomance && !isWork);
 
-    // “원천이 연애/일상 트리거가 없더라도” 일상 템플릿으로 약하게 변환
     const templates = [];
 
     if (isRomance) {
@@ -640,8 +787,6 @@ function makeStoryCandidates(rawSignals, { hl }) {
       );
     }
 
-    // 원천 raw도 조금 섞되, “썰 검색어”로 변환
-    // raw가 이미 연애/일상인 경우: 짧게 붙여서 검색형
     if (baseFit >= 45) {
       templates.push({ t: `${raw} 썰`, tag: isRomance ? "연애" : isWork ? "직장" : "일상" });
       if (raw.length <= 8) templates.push({ t: `${raw} 레전드`, tag: isRomance ? "연애" : isWork ? "직장" : "일상" });
@@ -675,20 +820,17 @@ function makeStoryCandidates(rawSignals, { hl }) {
 
 function normalizeStoryTerm(s) {
   if (!s) return "";
-  let t = String(s).trim();
+  let t = sanitizeText(String(s)).trim();
   t = t.replace(/\s+/g, " ");
-  // 너무 긴 문장은 잘라내서 “검색되는 키워드”로 유지
   if (t.length > 28) t = t.slice(0, 28).trim();
-  // 마지막이 조사로 끝나면 어색해서 조금 정리
   t = t.replace(/(때문에)$/g, "때문");
+  if (t.includes("�")) return "";
   return t;
 }
 function toSearchTerm(term) {
-  // 검색창에 넣기 좋은 형태(너무 감탄/기호 제거)
-  let t = String(term || "");
+  let t = sanitizeText(String(term || ""));
   t = t.replace(/[“”"']/g, "");
   t = t.replace(/\s+/g, " ").trim();
-  // “썰”은 유지하되, 너무 길면 줄임
   if (t.length > 24) t = t.slice(0, 24).trim();
   return t;
 }
@@ -696,12 +838,12 @@ function pickOne(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
-// YouTube Suggest (ds=yt) - 수요 검증 핵심
+// YouTube Suggest (ds=yt)
 async function fetchYouTubeSuggest(query, { geo = "KR", hl = "ko" } = {}) {
-  const q = String(query || "").trim();
+  const q = sanitizeText(String(query || "")).trim();
   if (!q) return [];
   const key = `ytSuggest:${geo}:${hl}:${q.toLowerCase()}`;
-  const cached = memGet(key, 6 * 60 * 60 * 1000); // 6시간(서버리스라 보장X, 그래도 도움)
+  const cached = memGet(key, 6 * 60 * 60 * 1000);
   if (cached) return cached;
 
   const url =
@@ -718,10 +860,11 @@ async function fetchYouTubeSuggest(query, { geo = "KR", hl = "ko" } = {}) {
 
   if (!r.ok || !Array.isArray(r.json)) return [];
 
-  const suggestions = Array.isArray(r.json[1]) ? r.json[1].map((x) => String(x)) : [];
+  const suggestions = Array.isArray(r.json[1]) ? r.json[1].map((x) => sanitizeText(String(x))) : [];
   const cleaned = suggestions
     .map((s) => s.trim())
     .filter(Boolean)
+    .filter((s) => !s.includes("�"))
     .slice(0, 20);
 
   memSet(key, cleaned);
@@ -729,10 +872,8 @@ async function fetchYouTubeSuggest(query, { geo = "KR", hl = "ko" } = {}) {
 }
 
 async function enrichWithYouTubeSuggest(items, { geo, hl, debug }) {
-  // 요청 폭발 방지: 동시성 제한
   const concurrency = 6;
   let idx = 0;
-
   const results = new Array(items.length);
 
   async function worker() {
@@ -750,12 +891,10 @@ async function enrichWithYouTubeSuggest(items, { geo, hl, debug }) {
           ...it,
           demandScore,
           related,
-          // tags 강화
           tags: strengthenTags(it.tags, it.term, sugg),
         };
       } catch (e) {
         debug?.errors?.push({ step: "ytSuggest", term: it.term, error: e?.message || String(e) });
-        // suggest 실패 시: 휴리스틱으로 대체(너무 낮게 잡진 않음)
         results[i] = {
           ...it,
           demandScore: clampInt(25 + it.storyFitScore * 0.35, 0, 100),
@@ -769,29 +908,24 @@ async function enrichWithYouTubeSuggest(items, { geo, hl, debug }) {
   await Promise.all(workers);
 
   debug.steps.ytSuggestChecked = items.length;
-
   return results.filter(Boolean);
 }
 
 function suggestQueryFromTerm(term) {
-  // “썰”을 포함하되, 자동완성은 기본 키워드가 더 잘 나올 때가 많아서 줄여줌
-  let t = String(term || "").trim();
+  let t = sanitizeText(String(term || "")).trim();
   t = t.replace(/\s*레전드\s*/g, " ");
   t = t.replace(/\s+/g, " ").trim();
-  // 너무 길면 앞쪽만
   if (t.length > 16) t = t.slice(0, 16).trim();
   return t;
 }
 
 function scoreDemandFromSuggest(query, sugg, it) {
-  // “조회수” 최우선 → 자동완성 결과가 많고, 롱테일이 다양하면 Demand↑
   const list = Array.isArray(sugg) ? sugg : [];
   const count = list.length;
 
-  // 다양성: 서로 다른 뒤쪽 토큰 개수
   const tails = new Set();
   for (const s of list) {
-    const rest = s.replace(query, "").trim();
+    const rest = sanitizeText(String(s)).replace(query, "").trim();
     if (rest) tails.add(rest.split(" ")[0]);
   }
   const diversity = tails.size;
@@ -800,29 +934,29 @@ function scoreDemandFromSuggest(query, sugg, it) {
   base += Math.min(60, count * 4.2);
   base += Math.min(25, diversity * 4.5);
 
-  // 연애 키워드는 수요층이 매우 커서 가점(너 목표 반영)
   const romanceBoost = hasAny(it.term, TRIG_ROMANCE) ? 10 : 0;
   const dailyBoost = hasAny(it.term, TRIG_DAILY) ? 6 : 0;
   const workBoost = hasAny(it.term, TRIG_WORK) ? 5 : 0;
-
-  // 감정 트리거가 있으면 클릭/시청 지속에 도움 → 가점
   const emoBoost = hasAny(it.term, EMO_TRIG) ? 8 : 0;
 
   return clampInt(Math.round(base + romanceBoost + dailyBoost + workBoost + emoBoost), 0, 100);
 }
 
 function mergeRelated(defaultRel, sugg, term) {
-  const rel = new Set(defaultRel || []);
-  for (const s of (sugg || []).slice(0, 12)) rel.add(s);
-  // term 기반 확장
+  const rel = new Set((defaultRel || []).map((x) => sanitizeText(String(x))));
+  for (const s of (sugg || []).slice(0, 12)) {
+    const v = sanitizeText(String(s)).trim();
+    if (!v || v.includes("�")) continue;
+    rel.add(v);
+  }
   rel.add(`${term} 공감`);
   rel.add(`${term} 사이다`);
   rel.add(`${term} 반전`);
-  return Array.from(rel).slice(0, 12);
+  return cleanArrayStrings(Array.from(rel), "ko", 12);
 }
 
 function strengthenTags(tags, term, sugg) {
-  const set = new Set(tags || []);
+  const set = new Set((tags || []).map((x) => sanitizeText(String(x))));
   if (hasAny(term, TRIG_ROMANCE)) set.add("연애");
   if (hasAny(term, TRIG_WORK)) set.add("직장");
   if (hasAny(term, TRIG_DAILY)) set.add("일상");
@@ -914,7 +1048,7 @@ async function fromYouTubeMostPopular({ tf, geo, hl, key }) {
   const r = await fetchJson(url.toString(), { timeoutMs: 9000 });
   if (!r.ok || !r.json) throw new Error("YouTube fetch 실패: " + r.status);
 
-  const titles = (r.json.items || []).map((it) => String(it?.snippet?.title || "")).filter(Boolean);
+  const titles = (r.json.items || []).map((it) => sanitizeText(String(it?.snippet?.title || ""))).filter(Boolean);
   const { top, relatedList } = deriveFromTitles(titles, hl, 80);
 
   const items = top.map(({ term, count }) => {
@@ -998,7 +1132,7 @@ async function fromGoogleNewsRss({ tf, geo, hl }) {
   if (!r.ok || !r.text) throw new Error("Google News RSS fetch 실패: " + r.status);
 
   const titlesRaw = parseFeedTitles(r.text).slice(0, 120);
-  const titles = titlesRaw.map((t) => String(t).split(" - ")[0]);
+  const titles = titlesRaw.map((t) => sanitizeText(String(t).split(" - ")[0]));
 
   const { top, relatedList } = deriveFromTitles(titles, hl, 80);
 
@@ -1036,7 +1170,7 @@ async function fromHackerNews({ tf, geo, hl }) {
   const r = await fetchJson("https://hn.algolia.com/api/v1/search_by_date?tags=story&hitsPerPage=80", { timeoutMs: 9000 });
   if (!r.ok || !r.json) throw new Error("HN fetch 실패: " + r.status);
 
-  const titles = (r.json.hits || []).map((h) => String(h?.title || "")).filter(Boolean);
+  const titles = (r.json.hits || []).map((h) => sanitizeText(String(h?.title || ""))).filter(Boolean);
   const { top, relatedList } = deriveFromTitles(titles, "en", 80);
 
   const items = top.map(({ term, count }) => {
@@ -1068,12 +1202,11 @@ async function fromHackerNews({ tf, geo, hl }) {
 /* -----------------------
  * Naver DataLab (검증용)
  * ---------------------- */
+// 아래는 네 기존 코드 그대로 유지(이미 JSON이라 인코딩 깨짐 거의 없음)
 async function fromNaverDataLabDiscover({ tf, geo, hl, clientId, clientSecret }) {
   const n = bucketCount(tf);
 
   const maxCandidates = clampInt(process.env.NAVER_CANDIDATES || 35, 10, 60);
-
-  // 후보 자동 수집(가벼운 방식)
   const candidates = await gatherCandidates({ geo, hl, maxCandidates });
 
   const seedsEnv = (process.env.NAVER_SEEDS || "").toString().trim();
@@ -1117,7 +1250,7 @@ async function fromNaverDataLabDiscover({ tf, geo, hl, clientId, clientSecret })
 
     const results = r.json.results || [];
     for (const rs of results) {
-      const term = String(rs.title || rs.keyword || "").trim();
+      const term = sanitizeText(String(rs.title || rs.keyword || "")).trim();
       const raw = (rs.data || []).map((d) => Number(d.ratio || 0));
       if (!term || raw.length === 0) continue;
 
