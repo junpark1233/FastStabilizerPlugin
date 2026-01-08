@@ -322,28 +322,60 @@ async function providerReddit({ tf, geo, hl }) {
     .slice(0, 8);
 
   const titles = [];
+  const ua = "TrendsDashboard/1.0 (private use; vercel serverless)";
+
   for (const sub of subs) {
-    const url = `https://www.reddit.com/r/${encodeURIComponent(sub)}/hot.json?limit=50&raw_json=1`;
+    // 1) JSON (우선 시도)
+    const jsonUrl = `https://www.reddit.com/r/${encodeURIComponent(sub)}/hot.json?limit=50&raw_json=1`;
     try {
-      const j = await fetchJson(url, {
+      const j = await fetchJson(jsonUrl, {
         timeoutMs: 10000,
         headers: {
-          "User-Agent": "Mozilla/5.0 (compatible; TrendsProxy/1.0; +https://vercel.app)",
+          "User-Agent": ua,
+          "Accept": "application/json",
           "Accept-Language": hl,
         },
       });
+
       const children = j?.data?.children || [];
       for (const c of children) {
         const title = c?.data?.title;
         if (title) titles.push(title);
       }
+      // JSON 성공했으면 다음 서브레딧으로
+      continue;
     } catch (e) {
-      // 부분 실패는 무시하고 계속
+      // JSON 실패하면 RSS로 넘어감
+    }
+
+    // 2) RSS fallback (JSON 막힐 때 훨씬 잘 살아남음)
+    const rssUrl = `https://www.reddit.com/r/${encodeURIComponent(sub)}/hot.rss`;
+    try {
+      const xml = await fetchText(rssUrl, {
+        timeoutMs: 10000,
+        headers: {
+          "User-Agent": ua,
+          "Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.8",
+          "Accept-Language": hl,
+        },
+      });
+
+      // 기존 parseRssTitles() 재사용 (item title만 뽑음)
+      const rssTitles = parseRssTitles(xml);
+      for (const t of rssTitles) titles.push(t);
+    } catch (e) {
+      // RSS도 실패하면 이 서브레딧은 스킵
     }
   }
 
   if (!titles.length) {
-    return makeMock({ tf, geo, hl, note: "Reddit fetch 실패(레이트리밋/네트워크)로 mock 대체", sourceRequested: "reddit" });
+    return makeMock({
+      tf,
+      geo,
+      hl,
+      note: "Reddit fetch 실패(레이트리밋/차단/네트워크)로 mock 대체됨. RSS fallback까지 실패.",
+      sourceRequested: "reddit",
+    });
   }
 
   const { topTerms, termToRelated } = deriveKeywordsFromTitles(titles);
@@ -359,65 +391,15 @@ async function providerReddit({ tf, geo, hl }) {
 
   return {
     items,
-    meta: { source: "reddit", isMock: false, seriesIsSynthetic: true, note: `r/${subs.join(", r/")} hot 기반` },
+    meta: {
+      source: "reddit",
+      isMock: false,
+      seriesIsSynthetic: true,
+      note: `Reddit 기반 (JSON 우선 + RSS fallback) / r/${subs.join(", r/")}`,
+    },
   };
 }
 
-/* ---------------------------- Google News RSS ---------------------------- */
-
-async function providerNewsRSS({ tf, geo, hl, q }) {
-  // Google News RSS
-  const ceid = geo === "KR" ? "KR:ko" : geo === "US" ? "US:en" : `${geo}:${hl}`;
-  const base = q
-    ? `https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=${encodeURIComponent(hl)}&gl=${encodeURIComponent(
-        geo
-      )}&ceid=${encodeURIComponent(ceid)}`
-    : `https://news.google.com/rss?hl=${encodeURIComponent(hl)}&gl=${encodeURIComponent(geo)}&ceid=${encodeURIComponent(ceid)}`;
-
-  const xml = await fetchText(base, { timeoutMs: 10000 });
-  const titles = parseRssTitles(xml);
-
-  if (!titles.length) {
-    return makeMock({ tf, geo, hl, note: "News RSS 파싱 실패로 mock 대체", sourceRequested: "news" });
-  }
-
-  const { topTerms, termToRelated } = deriveKeywordsFromTitles(titles);
-
-  const items = topTerms.slice(0, 20).map((t, idx) => ({
-    rank: idx + 1,
-    term: t.term,
-    score: t.score,
-    related: (termToRelated.get(t.term) || []).slice(0, 8),
-    series: syntheticSeries(tf, t.term, t.score),
-    links: buildLinks(t.term, geo, hl),
-  }));
-
-  return {
-    items,
-    meta: { source: "news", isMock: false, seriesIsSynthetic: true, note: q ? "Google News RSS (search)" : "Google News RSS (top)" },
-  };
-}
-
-function parseRssTitles(xml) {
-  // 매우 단순한 RSS title 추출 (개인용 대시보드 수준)
-  const out = [];
-  const re = /<item>[\s\S]*?<title>([\s\S]*?)<\/title>/gi;
-  let m;
-  while ((m = re.exec(xml)) !== null) {
-    const t = decodeHtml(m[1] || "").replace(/\s+-\s+Google News\s*$/i, "").trim();
-    if (t) out.push(t);
-  }
-  return out;
-}
-
-function decodeHtml(s) {
-  return (s || "")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
-}
 
 /* ---------------------------- Naver DataLab (Seed 기반) ---------------------------- */
 
