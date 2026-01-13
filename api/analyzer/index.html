@@ -1,0 +1,719 @@
+<!doctype html><html lang="ko"><head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>YouTube Analyzer (Data Collector + GPT Pack)</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.19.3/dist/xlsx.full.min.js"></script>
+<style>
+:root{color-scheme:light}html.dark{color-scheme:dark}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace}
+.sticky{position:sticky;top:0;z-index:10}
+</style>
+</head>
+<body class="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-50">
+<header class="sticky border-b border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-950/70 backdrop-blur">
+  <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
+    <div class="flex items-center gap-3">
+      <div class="w-10 h-10 rounded-2xl bg-slate-900 dark:bg-slate-100 flex items-center justify-center">
+        <span class="font-black text-white dark:text-slate-900">YT</span>
+      </div>
+      <div>
+        <div class="font-semibold leading-tight">YouTube Analyzer</div>
+        <div class="text-xs text-slate-500 dark:text-slate-400">데이터 수집/정리 + GPT 분석팩/프롬프트 생성 (앱이 인사이트 문장 자동 생성 ❌)</div>
+      </div>
+    </div>
+    <div class="flex items-center gap-2 flex-wrap justify-end">
+      <div class="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 text-xs">
+        <div class="text-slate-500 dark:text-slate-400">Quota units(예상)</div>
+        <div class="mono font-semibold"><span id="quotaUsed">0</span> / <span id="quotaTotal">10000</span></div>
+      </div>
+      <button id="btnDark" class="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 text-sm hover:bg-slate-100 dark:hover:bg-slate-900">다크모드</button>
+      <a class="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 text-sm hover:bg-slate-100 dark:hover:bg-slate-900"
+         href="https://console.cloud.google.com/" target="_blank" rel="noreferrer">API 키 만들기</a>
+    </div>
+  </div>
+</header>
+
+<main class="max-w-7xl mx-auto px-4 py-6 space-y-4">
+  <section class="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4">
+    <div class="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-3">
+      <div class="space-y-1">
+        <div class="font-semibold">로컬 HTML로 쓰는 방법</div>
+        <div class="text-sm text-slate-600 dark:text-slate-300">
+          이 파일을 <span class="mono font-semibold">file://</span>로 열면 내 컴퓨터에는 <span class="mono">/api</span>가 없어서 호출이 실패합니다
+          그래서 아래에 <span class="font-semibold">Vercel 배포 도메인</span>을 입력해서 원격 API를 호출합니다
+        </div>
+      </div>
+      <div class="w-full lg:w-[600px] space-y-2">
+        <label class="text-sm font-medium">API 도메인(배포 URL)</label>
+        <div class="flex gap-2">
+          <input id="apiBase" class="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950"
+                 placeholder="예: https://your-project.vercel.app"/>
+          <button id="btnUseOrigin" class="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 text-sm hover:bg-slate-100 dark:hover:bg-slate-950 whitespace-nowrap">현재도메인</button>
+        </div>
+        <div class="flex items-center justify-between gap-2">
+          <div class="text-xs text-slate-500 dark:text-slate-400">로컬(file://)이면 필수 · 배포 페이지에서 열면 비워도 됨</div>
+          <div class="flex items-center gap-2 text-xs">
+            <span class="text-slate-500 dark:text-slate-400">총할당량</span>
+            <input id="quotaTotalInp" type="number" min="1" class="w-28 px-2 py-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 mono" value="10000"/>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 space-y-3">
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-3 items-end">
+      <div class="lg:col-span-2 space-y-2">
+        <div class="flex flex-wrap items-center gap-2">
+          <div class="text-sm font-medium">분석 모드</div>
+          <label class="inline-flex items-center gap-2 text-sm px-2 py-1 rounded-lg border border-slate-200 dark:border-slate-800 cursor-pointer">
+            <input type="radio" name="mode" value="my" checked>
+            <span>내채널 분석</span>
+          </label>
+          <label class="inline-flex items-center gap-2 text-sm px-2 py-1 rounded-lg border border-slate-200 dark:border-slate-800 cursor-pointer">
+            <input type="radio" name="mode" value="bench">
+            <span>타채널 벤치</span>
+          </label>
+          <label class="inline-flex items-center gap-2 text-sm px-2 py-1 rounded-lg border border-slate-200 dark:border-slate-800 cursor-pointer">
+            <input type="radio" name="mode" value="compare">
+            <span>내 vs 타 비교</span>
+          </label>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div>
+            <label id="labelA" class="text-sm font-medium">채널 A 입력(URL / @handle / 채널ID)</label>
+            <input id="channelA" class="mt-1 w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950"
+                   placeholder="예: https://youtube.com/@bimilwoo 또는 @bimilwoo 또는 UCxxxx..."/>
+          </div>
+          <div id="wrapB" class="hidden">
+            <label class="text-sm font-medium">채널 B 입력(비교용)</label>
+            <input id="channelB" class="mt-1 w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950"
+                   placeholder="예: @benchmarkChannel 또는 채널 URL/ID"/>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+          <div>
+            <label class="text-sm font-medium">최근 N개</label>
+            <select id="optN" class="mt-1 w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950">
+              <option>10</option><option selected>25</option><option>50</option><option>100</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-sm font-medium">기간</label>
+            <select id="optDays" class="mt-1 w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950">
+              <option value="7">7일</option><option value="30" selected>30일</option><option value="90">90일</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-sm font-medium">캐시 만료</label>
+            <select id="optCacheTtl" class="mt-1 w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950">
+              <option value="3600">1시간</option>
+              <option value="21600" selected>6시간</option>
+              <option value="86400">24시간</option>
+            </select>
+          </div>
+          <div class="flex items-end gap-2">
+            <label class="inline-flex items-center gap-2 text-sm px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 cursor-pointer w-full justify-center">
+              <input id="optUseCache" type="checkbox" checked>
+              <span>캐시 사용</span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="space-y-2">
+        <button id="btnFetch" class="w-full px-4 py-2 rounded-xl bg-slate-900 text-white hover:bg-slate-800 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-slate-200">불러오기</button>
+        <div class="rounded-2xl border border-slate-200 dark:border-slate-800 p-3 bg-slate-50 dark:bg-slate-950/40">
+          <div class="flex items-center justify-between text-sm">
+            <div class="font-semibold">진행상태</div>
+            <div class="mono"><span id="timer">00:00</span></div>
+          </div>
+          <div id="step" class="mt-1 text-sm text-slate-600 dark:text-slate-300">대기</div>
+          <div class="mt-2 w-full h-2 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+            <div id="bar" class="h-2 bg-slate-900 dark:bg-slate-100" style="width:0%"></div>
+          </div>
+          <div class="mt-1 text-xs text-slate-500 dark:text-slate-400"><span id="pct">0</span>% · <span id="throughput">0</span> / <span id="throughputTotal">0</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="errBox" class="hidden rounded-2xl border border-red-200 bg-red-50 text-red-900 dark:border-red-900/40 dark:bg-red-950/40 dark:text-red-100 p-3 text-sm"></div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-3">
+      <div class="rounded-2xl border border-slate-200 dark:border-slate-800 p-3 bg-slate-50 dark:bg-slate-950/40">
+        <div class="flex items-center justify-between">
+          <div class="font-semibold text-sm">채널 요약 A</div>
+          <span id="badgeA" class="hidden px-2 py-0.5 rounded-full text-xs bg-slate-200 dark:bg-slate-800">A</span>
+        </div>
+        <div id="chMetaA" class="mt-1 text-sm text-slate-600 dark:text-slate-300">-</div>
+        <div class="mt-2 grid grid-cols-2 gap-2 text-sm">
+          <div class="rounded-xl p-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800"><div class="text-xs text-slate-500 dark:text-slate-400">구독자</div><div id="chSubsA" class="font-semibold">-</div></div>
+          <div class="rounded-xl p-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800"><div class="text-xs text-slate-500 dark:text-slate-400">총조회</div><div id="chViewsA" class="font-semibold">-</div></div>
+          <div class="rounded-xl p-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800"><div class="text-xs text-slate-500 dark:text-slate-400">영상수</div><div id="chVideosA" class="font-semibold">-</div></div>
+          <div class="rounded-xl p-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800"><div class="text-xs text-slate-500 dark:text-slate-400">개설일</div><div id="chCreatedA" class="font-semibold">-</div></div>
+        </div>
+      </div>
+
+      <div id="summaryB" class="hidden rounded-2xl border border-slate-200 dark:border-slate-800 p-3 bg-slate-50 dark:bg-slate-950/40">
+        <div class="flex items-center justify-between">
+          <div class="font-semibold text-sm">채널 요약 B</div>
+          <span class="px-2 py-0.5 rounded-full text-xs bg-slate-200 dark:bg-slate-800">B</span>
+        </div>
+        <div id="chMetaB" class="mt-1 text-sm text-slate-600 dark:text-slate-300">-</div>
+        <div class="mt-2 grid grid-cols-2 gap-2 text-sm">
+          <div class="rounded-xl p-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800"><div class="text-xs text-slate-500 dark:text-slate-400">구독자</div><div id="chSubsB" class="font-semibold">-</div></div>
+          <div class="rounded-xl p-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800"><div class="text-xs text-slate-500 dark:text-slate-400">총조회</div><div id="chViewsB" class="font-semibold">-</div></div>
+          <div class="rounded-xl p-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800"><div class="text-xs text-slate-500 dark:text-slate-400">영상수</div><div id="chVideosB" class="font-semibold">-</div></div>
+          <div class="rounded-xl p-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800"><div class="text-xs text-slate-500 dark:text-slate-400">개설일</div><div id="chCreatedB" class="font-semibold">-</div></div>
+        </div>
+      </div>
+
+      <div class="rounded-2xl border border-slate-200 dark:border-slate-800 p-3 bg-slate-50 dark:bg-slate-950/40 space-y-2">
+        <div class="font-semibold text-sm">필터/정렬</div>
+        <div class="grid grid-cols-2 gap-2">
+          <div><label class="text-xs text-slate-500 dark:text-slate-400">형태</label>
+            <select id="fType" class="mt-1 w-full px-2 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 text-sm">
+              <option value="all" selected>전체</option><option value="shorts">쇼츠</option><option value="long">롱폼</option>
+            </select></div>
+          <div><label class="text-xs text-slate-500 dark:text-slate-400">쇼츠기준</label>
+            <select id="fShorts" class="mt-1 w-full px-2 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 text-sm">
+              <option value="60" selected>≤60초</option><option value="120">≤120초</option>
+            </select></div>
+        </div>
+        <div class="grid grid-cols-2 gap-2">
+          <div><label class="text-xs text-slate-500 dark:text-slate-400">조회수 min</label>
+            <input id="fMin" type="number" min="0" class="mt-1 w-full px-2 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 text-sm"/></div>
+          <div><label class="text-xs text-slate-500 dark:text-slate-400">검색(제목/해시태그)</label>
+            <input id="fQ" class="mt-1 w-full px-2 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 text-sm" placeholder="#연애, 송금..."/></div>
+        </div>
+        <div class="grid grid-cols-2 gap-2">
+          <div><label class="text-xs text-slate-500 dark:text-slate-400">정렬</label>
+            <select id="fSort" class="mt-1 w-full px-2 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 text-sm">
+              <option value="views" selected>조회수</option><option value="vpd">조회수/일</option><option value="date">업로드일</option>
+            </select></div>
+          <div><label class="text-xs text-slate-500 dark:text-slate-400">방향</label>
+            <select id="fDir" class="mt-1 w-full px-2 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 text-sm">
+              <option value="desc" selected>내림</option><option value="asc">오름</option>
+            </select></div>
+        </div>
+        <div class="flex gap-2">
+          <button id="btnApply" class="flex-1 px-3 py-2 rounded-xl bg-slate-900 text-white hover:bg-slate-800 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-slate-200 text-sm">적용</button>
+          <button id="btnResetQuota" class="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-950 text-sm">Quota 리셋</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="rounded-2xl border border-slate-200 dark:border-slate-800 p-3 bg-white dark:bg-slate-900">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div class="font-semibold text-sm">탭</div>
+        <div class="flex flex-wrap gap-2">
+          <button class="tab px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 text-sm" data-tab="data" aria-selected="true">데이터 보기</button>
+          <button class="tab px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 text-sm" data-tab="gpt" aria-selected="false">GPT 분석팩/프롬프트</button>
+          <button class="tab px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 text-sm" data-tab="export" aria-selected="false">내보내기</button>
+        </div>
+        <div class="text-xs text-slate-500 dark:text-slate-400">해시태그는 title+description의 #패턴만 추출 (tags 필드 출력/사용 ❌)</div>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-data" class="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
+    <div class="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between flex-wrap gap-2">
+      <div class="font-semibold">영상 목록</div>
+      <div class="flex items-center gap-2">
+        <div id="datasetPicker" class="hidden">
+          <select id="datasetSel" class="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 text-sm">
+            <option value="A" selected>채널 A</option>
+            <option value="B">채널 B</option>
+          </select>
+        </div>
+        <div class="text-sm text-slate-600 dark:text-slate-300">표시 <span id="shown" class="font-semibold">0</span> / <span id="total" class="font-semibold">0</span></div>
+      </div>
+    </div>
+    <div class="overflow-auto max-h-[560px]">
+      <table class="min-w-[1180px] w-full text-sm">
+        <thead class="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800">
+          <tr class="text-left">
+            <th class="px-3 py-2">타입</th><th class="px-3 py-2 w-[420px]">제목</th><th class="px-3 py-2">업로드</th>
+            <th class="px-3 py-2">길이</th><th class="px-3 py-2">조회</th><th class="px-3 py-2">조회/일</th>
+            <th class="px-3 py-2">좋아요</th><th class="px-3 py-2">댓글</th><th class="px-3 py-2 w-[340px]">해시태그</th><th class="px-3 py-2">카테고리</th>
+          </tr>
+        </thead>
+        <tbody id="tbody" class="divide-y divide-slate-100 dark:divide-slate-800"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="tab-gpt" class="hidden rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 space-y-3">
+    <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+      <div class="space-y-1">
+        <div class="font-semibold">GPT 분석팩/프롬프트</div>
+        <div class="text-sm text-slate-600 dark:text-slate-300">앱은 결론/인사이트 문장 자동 생성 ❌ · GPT에 붙여넣기용 “지시문+팩”만 생성</div>
+      </div>
+      <div class="flex gap-2 flex-wrap">
+        <button id="copyPack" class="px-3 py-2 rounded-xl bg-slate-900 text-white hover:bg-slate-800 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-slate-200 text-sm">분석팩 복사</button>
+        <button id="copyPrompt" class="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-950 text-sm">프롬프트 복사</button>
+        <button id="copyBoth" class="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-950 text-sm">프롬프트+팩</button>
+      </div>
+    </div>
+
+    <div class="rounded-2xl border border-slate-200 dark:border-slate-800 p-3 bg-slate-50 dark:bg-slate-950/40">
+      <div class="flex flex-wrap items-center gap-2">
+        <div class="text-sm font-semibold">프롬프트 템플릿</div>
+        <label class="inline-flex items-center gap-2 text-sm px-2 py-1 rounded-lg border border-slate-200 dark:border-slate-800 cursor-pointer">
+          <input type="radio" name="promptTpl" value="my" checked>
+          <span>내채널 분석용</span>
+        </label>
+        <label class="inline-flex items-center gap-2 text-sm px-2 py-1 rounded-lg border border-slate-200 dark:border-slate-800 cursor-pointer">
+          <input type="radio" name="promptTpl" value="bench">
+          <span>타채널 벤치용</span>
+        </label>
+        <label class="inline-flex items-center gap-2 text-sm px-2 py-1 rounded-lg border border-slate-200 dark:border-slate-800 cursor-pointer">
+          <input type="radio" name="promptTpl" value="compare">
+          <span>내 vs 타 비교용</span>
+        </label>
+        <div class="text-xs text-slate-500 dark:text-slate-400">모드가 compare면 비교용이 자동 선택됩니다</div>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
+      <div class="rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+        <div class="px-3 py-2 border-b border-slate-200 dark:border-slate-800 font-semibold">GPT 프롬프트</div>
+        <textarea id="promptOut" class="w-full h-[420px] p-3 bg-white dark:bg-slate-950 mono text-sm"></textarea>
+      </div>
+      <div class="rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+        <div class="px-3 py-2 border-b border-slate-200 dark:border-slate-800 font-semibold">분석팩(JSON)</div>
+        <textarea id="packOut" class="w-full h-[420px] p-3 bg-white dark:bg-slate-950 mono text-sm"></textarea>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-export" class="hidden rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 space-y-3">
+    <div class="flex items-center justify-between flex-wrap gap-2">
+      <div>
+        <div class="font-semibold">내보내기</div>
+        <div class="text-sm text-slate-600 dark:text-slate-300">현재 필터가 적용된 목록을 CSV/XLSX로 저장</div>
+      </div>
+      <div class="flex items-center gap-2 flex-wrap">
+        <div id="exportPicker" class="hidden">
+          <select id="exportSel" class="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 text-sm">
+            <option value="A" selected>채널 A</option>
+            <option value="B">채널 B</option>
+            <option value="BOTH">A+B(워크북)</option>
+          </select>
+        </div>
+        <button id="dlCsv" class="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-950 text-sm">CSV</button>
+        <button id="dlXlsx" class="px-3 py-2 rounded-xl bg-slate-900 text-white hover:bg-slate-800 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-slate-200 text-sm">XLSX</button>
+      </div>
+    </div>
+    <pre id="csvPrev" class="p-3 rounded-xl bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 text-xs mono overflow-auto max-h-[360px]">(데이터 없음)</pre>
+  </section>
+
+  <footer class="text-xs text-slate-500 dark:text-slate-400 pb-6">
+    로컬(file://)로 쓰면 API 도메인 입력 필수 · 키는 서버리스에만 저장 (브라우저에 노출 ❌)
+  </footer>
+</main>
+
+<script>
+const LS={dark:"ytan_dark",api:"ytan_apiBase",quota:"ytan_quota_used",quotaTotal:"ytan_quota_total"};
+const CACHE={prefix:"ytan_cache_"};
+const $=id=>document.getElementById(id);
+const fmt=n=>Number.isFinite(+n)?(+n).toLocaleString("ko-KR"):"-";
+const fmtDate=iso=>{if(!iso)return"-";const d=new Date(iso);return isNaN(d)?iso:d.toLocaleDateString("ko-KR");};
+const durSec=d=>{if(!d)return null;const m=d.match(/^PT(?:(\\d+)H)?(?:(\\d+)M)?(?:(\\d+)S)?$/);if(!m)return null;return (+m[1]||0)*3600+(+m[2]||0)*60+(+m[3]||0);};
+const fmtDur=s=>{if(!Number.isFinite(s))return"-";const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),ss=Math.floor(s%60);return h?`${h}:${String(m).padStart(2,"0")}:${String(ss).padStart(2,"0")}`:`${m}:${String(ss).padStart(2,"0")}`;};
+const daysSince=iso=>{const t=new Date(iso).getTime();if(!Number.isFinite(t))return null;return Math.max(1,Math.floor((Date.now()-t)/86400000));};
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+function setDark(on){document.documentElement.classList.toggle("dark",!!on);localStorage.setItem(LS.dark,on?"1":"0");}
+function initDark(){const v=localStorage.getItem(LS.dark);if(v==null){const p=window.matchMedia&&matchMedia("(prefers-color-scheme: dark)").matches;setDark(p);}else setDark(v==="1");}
+function toast(msg){const d=document.createElement("div");d.className="fixed bottom-4 left-1/2 -translate-x-1/2 px-3 py-2 rounded-xl bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-sm";d.textContent=msg;document.body.appendChild(d);setTimeout(()=>d.remove(),1200);}
+async function copy(text){try{await navigator.clipboard.writeText(text);toast("복사 완료");}catch{const ta=document.createElement("textarea");ta.value=text;document.body.appendChild(ta);ta.select();document.execCommand("copy");ta.remove();toast("복사 완료");}}
+function showErr(msg){$("errBox").classList.remove("hidden");$("errBox").innerHTML=`<div class="font-semibold">오류</div><div class="mt-1">${esc(msg)}</div>`;}
+function clearErr(){$("errBox").classList.add("hidden");$("errBox").innerHTML="";}
+
+let quotaUsed=+(localStorage.getItem(LS.quota)||"0");
+function getQuotaTotal(){return Math.max(1,Math.floor(+$("quotaTotalInp").value||10000));}
+function setQuotaUsed(v){quotaUsed=Math.max(0,Math.floor(+v||0));localStorage.setItem(LS.quota,String(quotaUsed));$("quotaUsed").textContent=String(quotaUsed);}
+function syncQuotaUI(){ $("quotaUsed").textContent=String(quotaUsed); $("quotaTotal").textContent=String(getQuotaTotal()); }
+function addQuota(units){ setQuotaUsed(quotaUsed + (Math.floor(+units||0))); syncQuotaUI(); }
+
+let tickTimer=null, startedAt=0;
+function startTimer(){startedAt=Date.now();$("timer").textContent="00:00";stopTimer();tickTimer=setInterval(()=>{const s=Math.floor((Date.now()-startedAt)/1000);$("timer").textContent=`${String(Math.floor(s/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`;},250);}
+function stopTimer(){if(tickTimer){clearInterval(tickTimer);tickTimer=null;}}
+function setStep(text){$("step").textContent=text;}
+function setProgress(done,total){$("throughput").textContent=String(done||0);$("throughputTotal").textContent=String(total||0);const pct=total?Math.max(0,Math.min(100,Math.floor((done/total)*100))):0;$("pct").textContent=String(pct);$("bar").style.width=pct+"%";}
+
+function getApiBase(){let base=$("apiBase").value.trim()||localStorage.getItem(LS.api)||"";return base.replace(/\\/+$/,"");}
+function saveApiBase(){localStorage.setItem(LS.api,$("apiBase").value.trim().replace(/\\/+$/,""));}
+function getMode(){return document.querySelector('input[name="mode"]:checked')?.value||"my";}
+
+async function apiFetch(params){
+  let base="";
+  if(location.protocol==="file:"){base=getApiBase();if(!base) throw new Error("로컬(file://)에서 실행 중입니다. API 도메인(배포 URL)을 입력하세요.");}
+  const u1=`${base}/api/youtube_analyzer?${params}`;
+  const u2=`${base}/api/youtube_analyzer.js?${params}`;
+  let r=await fetch(u1); if(r.status===404) r=await fetch(u2);
+  const txt=await r.text(); let j; try{j=JSON.parse(txt);}catch{throw new Error("서버 응답이 JSON이 아닙니다: "+txt.slice(0,200));}
+  if(j?.meta?.quotaUnits!=null) addQuota(j.meta.quotaUnits);
+  if(!r.ok) throw new Error(j?.message||("HTTP "+r.status));
+  return j;
+}
+
+function nowSec(){return Math.floor(Date.now()/1000);}
+function cacheTtl(){return Math.max(300,Math.floor(+$("optCacheTtl").value||21600));}
+function cacheKey(kind,id){return `${CACHE.prefix}${kind}_${id}`;}
+function cacheGet(kind,id){
+  if(!$("optUseCache").checked) return null;
+  const raw=localStorage.getItem(cacheKey(kind,id)); if(!raw) return null;
+  try{const j=JSON.parse(raw); if(!j?.savedAt || (nowSec()-j.savedAt)>cacheTtl()) return null; return j.value;}catch{return null;}
+}
+function cacheSet(kind,id,value){
+  if(!$("optUseCache").checked) return;
+  try{localStorage.setItem(cacheKey(kind,id),JSON.stringify({savedAt:nowSec(),value}));}catch{}
+}
+
+let state={catMap:{},A:{channel:null,videosAll:[],videosFiltered:[]},B:{channel:null,videosAll:[],videosFiltered:[]},active:"A",pack:"",prompt:""};
+
+function extractHashtags(title,desc){
+  const text=(title||"")+"\\n"+(desc||"");
+  let m=[]; try{m=text.match(/#[\\p{L}\\p{N}_]+/gu)||[];}catch{m=text.match(/#[0-9A-Za-z가-힣_]+/g)||[];}
+  return Array.from(new Set(m.map(x=>x.trim())));
+}
+function classify(v,shortsSec){const s=v.durationSec;if(!Number.isFinite(s))return"unknown";return s<=shortsSec?"shorts":"long";}
+function keywordSummary(videos,topN=20){
+  const stop=new Set(["the","and","or","to","a","an","of","in","on","for","is","are","이","그","저","것","수","들","좀","진짜","너무","그냥","근데","그리고","그래서","하다","하는","했다","되는","있다","없다","오늘","내","나","너","우리"]);
+  const m=new Map();
+  for(const v of videos){
+    const txt=((v.title||"")+" "+(v.description||"")).replace(/https?:\\/\\/\\S+/g," ");
+    const cleaned=txt.replace(/#[\\p{L}\\p{N}_]+/gu," ").replace(/[^\u0000-\u007F\\p{L}\\p{N}\\s]/gu," ");
+    const tokens=cleaned.toLowerCase().split(/\\s+/).filter(Boolean);
+    for(const t of tokens){if(t.length<2||stop.has(t))continue;m.set(t,(m.get(t)||0)+1);}
+  }
+  return Array.from(m.entries()).sort((a,b)=>b[1]-a[1]).slice(0,topN).map(([k,c])=>({keyword:k,count:c}));
+}
+function normVideo(it,catMap){
+  const id=it?.id; const sn=it?.snippet||{}; const st=it?.statistics||{}; const cd=it?.contentDetails||{};
+  const title=sn.title||"", desc=sn.description||"";
+  const hashtags=extractHashtags(title,desc);
+  const duration=cd.duration||null; const durationSec=durSec(duration);
+  const publishedAt=sn.publishedAt||null;
+  const viewCount=st.viewCount!=null?+st.viewCount:0;
+  const likeCount=st.likeCount!=null?+st.likeCount:null;
+  const commentCount=st.commentCount!=null?+st.commentCount:null;
+  const d=daysSince(publishedAt); const viewsPerDay=d?viewCount/d:null;
+  const categoryId=sn.categoryId??null; const categoryName=categoryId?(catMap[categoryId]||null):null;
+  return {videoId:id,title,description:desc,publishedAt,categoryId,categoryName,duration,durationSec,viewCount,likeCount,commentCount,viewsPerDay,hashtags};
+}
+
+function renderChannel(which){
+  const ch=state[which].channel||null;
+  const metaEl=$(which==="A"?"chMetaA":"chMetaB");
+  const subsEl=$(which==="A"?"chSubsA":"chSubsB");
+  const viewsEl=$(which==="A"?"chViewsA":"chViewsB");
+  const vidsEl=$(which==="A"?"chVideosA":"chVideosB");
+  const createdEl=$(which==="A"?"chCreatedA":"chCreatedB");
+  if(!ch){metaEl.textContent="-";subsEl.textContent=viewsEl.textContent=vidsEl.textContent=createdEl.textContent="-";return;}
+  const handle=ch.handle?("@"+ch.handle.replace(/^@/,"")):(ch.customUrl||"");
+  metaEl.textContent=`${ch.title||"-"} · ID:${ch.channelId||"-"}${handle?(" · "+handle):""}`;
+  subsEl.textContent=ch.subscriberCount!=null?fmt(ch.subscriberCount):"-";
+  viewsEl.textContent=ch.viewCount!=null?fmt(ch.viewCount):"-";
+  vidsEl.textContent=ch.videoCount!=null?fmt(ch.videoCount):"-";
+  createdEl.textContent=fmtDate(ch.publishedAt);
+}
+
+function getActive(){const mode=getMode(); if(mode==="compare") return $("datasetSel").value||state.active; return "A";}
+
+function renderTable(){
+  const which=getActive(); state.active=which;
+  $("total").textContent=String((state[which].videosAll||[]).length);
+  $("shown").textContent=String((state[which].videosFiltered||[]).length);
+  const tb=$("tbody"); tb.innerHTML="";
+  const shortsSec=parseInt($("fShorts").value,10);
+  for(const v of state[which].videosFiltered){
+    const t=classify(v,shortsSec);
+    const badge=t==="shorts"
+      ?`<span class="px-2 py-0.5 rounded-full text-xs bg-emerald-100 text-emerald-900 dark:bg-emerald-900/30 dark:text-emerald-200">쇼츠</span>`
+      :t==="long"
+        ?`<span class="px-2 py-0.5 rounded-full text-xs bg-indigo-100 text-indigo-900 dark:bg-indigo-900/30 dark:text-indigo-200">롱폼</span>`
+        :`<span class="px-2 py-0.5 rounded-full text-xs bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200">?</span>`;
+    const tags=(v.hashtags||[]).join(" ")||"";
+    const url=`https://www.youtube.com/watch?v=${encodeURIComponent(v.videoId)}`;
+    const tr=document.createElement("tr");
+    tr.innerHTML=`
+      <td class="px-3 py-2">${badge}</td>
+      <td class="px-3 py-2">
+        <div class="font-medium">${esc(v.title||"")}</div>
+        <div class="text-xs text-slate-500 dark:text-slate-400 mono"><a class="underline" href="${url}" target="_blank" rel="noreferrer">${esc(v.videoId||"")}</a></div>
+      </td>
+      <td class="px-3 py-2">${esc(fmtDate(v.publishedAt))}</td>
+      <td class="px-3 py-2 mono">${esc(fmtDur(v.durationSec))}</td>
+      <td class="px-3 py-2 mono">${esc(fmt(v.viewCount))}</td>
+      <td class="px-3 py-2 mono">${esc(fmt(Math.round(v.viewsPerDay||0)))}</td>
+      <td class="px-3 py-2 mono">${v.likeCount==null?"-":esc(fmt(v.likeCount))}</td>
+      <td class="px-3 py-2 mono">${v.commentCount==null?"-":esc(fmt(v.commentCount))}</td>
+      <td class="px-3 py-2 mono break-words">${tags?`<div title="${esc(tags)}">${esc(tags)}</div>`:`<span class="text-slate-400">없음</span>`}</td>
+      <td class="px-3 py-2">${esc(v.categoryName||(v.categoryId?("ID:"+v.categoryId):"-"))}</td>`;
+    tb.appendChild(tr);
+  }
+}
+
+function applyFilters(){
+  const shortsSec=parseInt($("fShorts").value,10);
+  const type=$("fType").value;
+  const min=parseInt($("fMin").value,10);
+  const q=($("fQ").value||"").trim().toLowerCase();
+  const sort=$("fSort").value, dir=$("fDir").value;
+
+  for(const which of ["A","B"]){
+    const all=state[which].videosAll||[];
+    let arr=all.filter(v=>{
+      const t=classify(v,shortsSec);
+      if(type!=="all" && t!==type) return false;
+      if(Number.isFinite(min) && +v.viewCount<min) return false;
+      if(q){
+        const inTitle=(v.title||"").toLowerCase().includes(q);
+        const inHash=(v.hashtags||[]).join(" ").toLowerCase().includes(q);
+        if(!inTitle && !inHash) return false;
+      }
+      return true;
+    });
+
+    arr.sort((a,b)=>{
+      const av=+a.viewCount||0, bv=+b.viewCount||0;
+      const ap=+a.viewsPerDay||0, bp=+b.viewsPerDay||0;
+      const ad=new Date(a.publishedAt).getTime()||0, bd=new Date(b.publishedAt).getTime()||0;
+      let c=0; if(sort==="views") c=av-bv; else if(sort==="vpd") c=ap-bp; else c=ad-bd;
+      return dir==="desc"?-c:c;
+    });
+    state[which].videosFiltered=arr;
+  }
+  renderTable();
+  buildGPT();
+  renderCSVPreview();
+}
+
+function buildPackSingle(which,mode){
+  const ch=state[which].channel||{};
+  const vids=state[which].videosFiltered||[];
+  return {
+    meta:{generatedAt:new Date().toISOString(),mode,filters:{n:+$("optN").value,days:+$("optDays").value,type:$("fType").value,shortsSec:+$("fShorts").value,minViews:$("fMin").value?+$("fMin").value:null,query:$("fQ").value||"",sort:$("fSort").value,dir:$("fDir").value,cache:{enabled:$("optUseCache").checked,ttlSec:cacheTtl()},quota:{used:quotaUsed,total:getQuotaTotal()}}},
+    channel:{channelId:ch.channelId||null,title:ch.title||null,customUrl:ch.customUrl||null,handle:ch.handle||null,publishedAt:ch.publishedAt||null,subscriberCount:ch.subscriberCount??null,viewCount:ch.viewCount??null,videoCount:ch.videoCount??null},
+    videos:vids.map(v=>({videoId:v.videoId,title:v.title,publishedAt:v.publishedAt,description:(v.description||"").slice(0,500),categoryId:v.categoryId??null,categoryName:v.categoryName??null,duration:v.duration??null,durationSec:v.durationSec??null,viewCount:v.viewCount??null,likeCount:v.likeCount??null,commentCount:v.commentCount??null,viewsPerDay:v.viewsPerDay??null,url:`https://www.youtube.com/watch?v=${v.videoId}`,hashtags:v.hashtags||[]})),
+    topVideos:{byViewCount:[...vids].sort((a,b)=>(+b.viewCount||0)-(+a.viewCount||0)).slice(0,10).map(v=>({videoId:v.videoId,title:v.title,viewCount:v.viewCount,url:`https://www.youtube.com/watch?v=${v.videoId}`})),byViewsPerDay:[...vids].sort((a,b)=>(+b.viewsPerDay||0)-(+a.viewsPerDay||0)).slice(0,10).map(v=>({videoId:v.videoId,title:v.title,viewsPerDay:v.viewsPerDay,viewCount:v.viewCount,url:`https://www.youtube.com/watch?v=${v.videoId}`}))},
+    bottomVideos:{byViewsPerDay:[...vids].sort((a,b)=>(+a.viewsPerDay||0)-(+b.viewsPerDay||0)).slice(0,10).map(v=>({videoId:v.videoId,title:v.title,viewsPerDay:v.viewsPerDay,viewCount:v.viewCount,url:`https://www.youtube.com/watch?v=${v.videoId}`}))},
+    keywordSummary:keywordSummary(vids,20),
+    notes:["공개 데이터 기반 분석만 가능","CTR/유지율/노출/추천유입 등 비공개 지표는 불가(추정 금지)","앱 내부 자동 인사이트 생성 없음(데이터+팩+프롬프트만 제공)"]
+  };
+}
+function buildPackCompare(){
+  const packA=buildPackSingle("A","my"); const packB=buildPackSingle("B","bench");
+  return {meta:{generatedAt:new Date().toISOString(),mode:"compare",filters:packA.meta.filters},channelA:packA.channel,channelB:packB.channel,videosA:packA.videos,videosB:packB.videos,topVideos:{A:packA.topVideos,B:packB.topVideos},bottomVideos:{A:packA.bottomVideos,B:packB.bottomVideos},keywordSummary:{A:packA.keywordSummary,B:packB.keywordSummary},notes:packA.notes};
+}
+function getPromptTpl(){return document.querySelector('input[name="promptTpl"]:checked')?.value||"my";}
+function buildPrompt(tpl, packJSON){
+  if(tpl==="my") return ["너는 유튜브 쇼츠 성장 분석가다","아래 '분석팩'만 근거로, 공개 데이터로 가능한 범위에서만 분석해라","CTR/유지율 등 비공개 지표는 '불가'로 명확히 표기하고 추정하지 마라","앱이 만든 인사이트 문장을 믿지 말고, 반드시 팩 데이터 근거로만 말해라","출력은 Markdown으로","","1) 내 채널 요약(공개지표 기반)","2) 상위/하위(조회수/조회수-일) 패턴 비교(제목/해시태그/길이/업로드 타이밍/카테고리 관점)","3) 실행 규칙 10개(각 규칙의 근거 데이터 필드/영상ID를 함께 표기)","4) 2주 실행안 10개(주제/훅/제목 후보 2개/해시태그 후보)","","=== 분석팩(JSON) ===",packJSON].join("\\n");
+  if(tpl==="bench") return ["너는 유튜브 채널 벤치마킹 리서처다","아래 '분석팩'만 근거로, 공개 데이터로 가능한 범위에서만 분석해라","CTR/유지율 등 비공개 지표는 '불가'로 명확히 표기하고 추정하지 마라","출력은 Markdown으로","","1) 타채널 요약(공개지표 기반)","2) 조회수/조회수-일 상위 10개의 제목/해시태그/길이/카테고리 패턴 10개","3) 이 채널에서 반복되는 훅/제목 구조 템플릿 20개(변수 자리 포함)","4) 내가 모방해서 테스트할 실행안 10개(주제/훅/제목 후보 2개/해시태그 후보)","","=== 분석팩(JSON) ===",packJSON].join("\\n");
+  return ["너는 유튜브 쇼츠 성장 분석가다","아래 '분석팩'만 근거로, 공개 데이터로 가능한 범위에서만 비교 분석해라","CTR/유지율 등 비공개 지표는 '불가'로 명확히 표기하고 추정하지 마라","출력은 Markdown으로","","1) 채널A vs 채널B 공개지표 요약 비교 표","2) 각 채널 Top(조회수/조회수-일)에서 드러나는 패턴 차이 10개(제목/해시태그/길이/카테고리)","3) 'B의 장점'을 A에 이식하기 위한 실험 규칙 10개(근거 데이터 포함)","4) 2주 실행안 10개(A 기준) + 벤치 참고 영상ID 링크 포함","","=== 분석팩(JSON) ===",packJSON].join("\\n");
+}
+function buildGPT(){
+  const mode=getMode();
+  let packObj = (mode==="compare") ? buildPackCompare() : (mode==="bench") ? buildPackSingle("A","bench") : buildPackSingle("A","my");
+  const packJSON=JSON.stringify(packObj,null,2); state.pack=packJSON;
+  let tpl=getPromptTpl();
+  if(mode==="compare"){tpl="compare";document.querySelector('input[name="promptTpl"][value="compare"]').checked=true;}
+  else if(mode==="bench"){tpl="bench";document.querySelector('input[name="promptTpl"][value="bench"]').checked=true;}
+  else {tpl="my";document.querySelector('input[name="promptTpl"][value="my"]').checked=true;}
+  state.prompt=buildPrompt(tpl, packJSON);
+  $("packOut").value=state.pack; $("promptOut").value=state.prompt;
+}
+
+function rows(which){
+  return (state[which].videosFiltered||[]).map(v=>({videoId:v.videoId,title:v.title,publishedAt:v.publishedAt,duration:v.duration,durationSec:v.durationSec,viewCount:v.viewCount,viewsPerDay:Math.round(v.viewsPerDay||0),likeCount:v.likeCount,commentCount:v.commentCount,categoryId:v.categoryId,categoryName:v.categoryName,hashtags:(v.hashtags||[]).join(" "),url:`https://www.youtube.com/watch?v=${v.videoId}`}));
+}
+function toCSV(rows){
+  if(!rows.length) return "";
+  const cols=Object.keys(rows[0]);
+  const q=v=>{const s=(v??"").toString(); return /[",\\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s;};
+  return [cols.map(q).join(","), ...rows.map(r=>cols.map(c=>q(r[c])).join(","))].join("\\n");
+}
+function download(name,blob){const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),500);}
+function renderCSVPreview(){
+  const mode=getMode();
+  const sel = mode==="compare" ? ($("exportSel")?.value || "A") : "A";
+  const which = sel==="B" ? "B" : "A";
+  $("csvPrev").textContent = toCSV(rows(which).slice(0,20)) || "(데이터 없음)";
+}
+function switchTab(name){
+  ["data","gpt","export"].forEach(t=>{
+    $("tab-"+t).classList.toggle("hidden", t!==name);
+    document.querySelector(`.tab[data-tab="${t}"]`).setAttribute("aria-selected", t===name?"true":"false");
+  });
+}
+
+async function ensureCategories(){
+  if(state.catMap && Object.keys(state.catMap).length) return state.catMap;
+  setStep("카테고리 매핑 조회"); setProgress(0,1);
+  const cached=cacheGet("categories","KR");
+  if(cached){ state.catMap=cached; setProgress(1,1); return state.catMap; }
+  const c=await apiFetch(new URLSearchParams({action:"videoCategories",regionCode:"KR",hl:"ko_KR"}).toString());
+  const catMap={}; (c?.data?.items||[]).forEach(it=>{catMap[it.id]=it?.snippet?.title||it.id;});
+  state.catMap=catMap; cacheSet("categories","KR",catMap); setProgress(1,1); return catMap;
+}
+async function resolveChannel(input){
+  const cached=cacheGet("resolve",input); if(cached) return cached;
+  setStep("채널 조회(해석)");
+  const r=await apiFetch(new URLSearchParams({action:"resolve",input,allowSearchFallback:"1"}).toString());
+  const ch=r?.data?.channel; if(!ch?.channelId) throw new Error("채널 해석 실패: @handle 또는 채널ID로 다시 시도하세요");
+  cacheSet("resolve",input,ch); return ch;
+}
+async function fetchVideoIds(ch,n,days){
+  const until=Date.now()-days*86400000;
+  const key=`${ch.channelId}_${n}_${days}`;
+  const cached=cacheGet("ids",key); if(cached && Array.isArray(cached) && cached.length) return cached;
+  setStep("영상목록 조회(playlistItems)");
+  let ids=[], token="";
+  while(ids.length<n){
+    const max=Math.min(50,n-ids.length);
+    const p=new URLSearchParams({action:"playlistItems",playlistId:ch.uploadsPlaylistId,part:"contentDetails,snippet",maxResults:String(max)});
+    if(token) p.set("pageToken",token);
+    const pl=await apiFetch(p.toString());
+    const items=pl?.data?.items||[];
+    for(const it of items){
+      const vid=it?.contentDetails?.videoId;
+      const pub=it?.contentDetails?.videoPublishedAt || it?.snippet?.publishedAt;
+      if(!vid) continue;
+      const ms=pub?new Date(pub).getTime():Date.now();
+      if(ms<until) continue;
+      ids.push(vid); if(ids.length>=n) break;
+    }
+    token=pl?.data?.nextPageToken||"";
+    if(!token||items.length===0) break;
+  }
+  cacheSet("ids",key,ids); return ids;
+}
+async function fetchVideosByIds(ids,catMap){
+  const out=[]; let processed=0;
+  setStep("상세조회(videos.list) + 정규화"); setProgress(0,ids.length);
+  const uncached=[];
+  for(const id of ids){
+    const v=cacheGet("video",id);
+    if(v){ out.push(v); processed++; setProgress(processed,ids.length); }
+    else uncached.push(id);
+  }
+  for(let i=0;i<uncached.length;i+=50){
+    const batch=uncached.slice(i,i+50);
+    const v=await apiFetch(new URLSearchParams({action:"videos",id:batch.join(","),part:"snippet,contentDetails,statistics"}).toString());
+    const items=v?.data?.items||[];
+    for(const it of items){
+      const nv=normVideo(it,catMap);
+      out.push(nv); cacheSet("video",nv.videoId,nv);
+      processed++; setProgress(processed,ids.length);
+    }
+  }
+  out.sort((a,b)=>(new Date(b.publishedAt).getTime()||0)-(new Date(a.publishedAt).getTime()||0));
+  return out;
+}
+async function fetchPipeline(which,input){
+  const n=+$("optN").value, days=+$("optDays").value;
+  const ch=await resolveChannel(input);
+  state[which].channel=ch; renderChannel(which);
+  const catMap=await ensureCategories();
+  const ids=await fetchVideoIds(ch,n,days);
+  if(!ids.length) throw new Error("해당 기간/옵션에서 영상이 없습니다");
+  const vids=await fetchVideosByIds(ids,catMap);
+  state[which].videosAll=vids;
+}
+async function fetchAll(){
+  clearErr(); saveApiBase();
+  const mode=getMode();
+  const inputA=$("channelA").value.trim();
+  const inputB=$("channelB").value.trim();
+  if(!inputA) return showErr("채널 A 입력이 비어있습니다");
+  if(mode==="compare" && !inputB) return showErr("비교 모드에서는 채널 B 입력이 필요합니다");
+  if(location.protocol==="file:" && !getApiBase()) return showErr("로컬(file://)에서 실행 중입니다. API 도메인(배포 URL)을 입력하세요");
+
+  try{
+    startTimer(); setStep("시작"); setProgress(0,0);
+    $("datasetPicker").classList.toggle("hidden", mode!=="compare");
+    $("exportPicker").classList.toggle("hidden", mode!=="compare");
+    $("summaryB").classList.toggle("hidden", mode!=="compare");
+
+    state.A={channel:null,videosAll:[],videosFiltered:[]};
+    state.B={channel:null,videosAll:[],videosFiltered:[]};
+    await fetchPipeline("A",inputA);
+    if(mode==="compare"){ await fetchPipeline("B",inputB); $("badgeA").classList.remove("hidden"); }
+    else $("badgeA").classList.add("hidden");
+
+    setStep("렌더링"); setProgress(1,1);
+    applyFilters();
+    setStep("완료");
+  }catch(e){
+    showErr(e?.message||String(e)); setStep("실패");
+  }finally{ stopTimer(); }
+}
+
+function refreshModeUI(){
+  const mode=getMode();
+  const isCompare=mode==="compare";
+  $("wrapB").classList.toggle("hidden", !isCompare);
+  $("datasetPicker").classList.toggle("hidden", !isCompare);
+  $("exportPicker").classList.toggle("hidden", !isCompare);
+  $("summaryB").classList.toggle("hidden", !isCompare);
+  $("labelA").textContent = (mode==="my") ? "내 채널 입력(URL / @handle / 채널ID)" : (mode==="bench") ? "타채널 입력(URL / @handle / 채널ID)" : "채널 A 입력(URL / @handle / 채널ID)";
+  buildGPT(); renderTable(); renderCSVPreview();
+}
+
+function init(){
+  initDark();
+  $("apiBase").value=localStorage.getItem(LS.api)||"";
+  const qt=localStorage.getItem(LS.quotaTotal); if(qt) $("quotaTotalInp").value=qt;
+
+  $("btnDark").addEventListener("click",()=>setDark(!document.documentElement.classList.contains("dark")));
+  $("btnUseOrigin").addEventListener("click",()=>{ if(location.protocol==="file:") return showErr("로컬(file://)에서는 '현재도메인'을 쓸 수 없습니다. 배포 URL을 직접 입력하세요"); $("apiBase").value=location.origin; saveApiBase(); toast("현재 도메인 설정"); });
+
+  $("quotaTotalInp").addEventListener("change",()=>{ localStorage.setItem(LS.quotaTotal,String(getQuotaTotal())); syncQuotaUI(); });
+  document.querySelectorAll(".tab").forEach(b=>b.addEventListener("click",()=>switchTab(b.dataset.tab)));
+  document.querySelectorAll('input[name="mode"]').forEach(r=>r.addEventListener("change",refreshModeUI));
+  document.querySelectorAll('input[name="promptTpl"]').forEach(r=>r.addEventListener("change",buildGPT));
+  $("btnFetch").addEventListener("click",fetchAll);
+  $("btnApply").addEventListener("click",applyFilters);
+  $("btnResetQuota").addEventListener("click",()=>{setQuotaUsed(0);toast("Quota 초기화");});
+  $("datasetSel").addEventListener("change",()=>{renderTable();buildGPT();renderCSVPreview();});
+  $("exportSel").addEventListener("change",renderCSVPreview);
+
+  $("copyPack").addEventListener("click",()=>copy(state.pack||""));
+  $("copyPrompt").addEventListener("click",()=>copy(state.prompt||""));
+  $("copyBoth").addEventListener("click",()=>copy((state.prompt||"")+"\\n\\n"+(state.pack||"")));
+
+  $("dlCsv").addEventListener("click",()=>{
+    const mode=getMode();
+    const sel=mode==="compare"?($("exportSel").value||"A"):"A";
+    if(sel==="BOTH"){ showErr("CSV는 한 번에 한 채널만 내보낼 수 있습니다. XLSX에서 A+B(워크북)을 선택하세요."); return; }
+    const which=sel==="B"?"B":"A";
+    const csv=toCSV(rows(which));
+    const blob=new Blob([csv],{type:"text/csv;charset=utf-8"});
+    download(`youtube_analyzer_${which}.csv`,blob);
+  });
+  $("dlXlsx").addEventListener("click",()=>{
+    const mode=getMode();
+    const sel=mode==="compare"?($("exportSel").value||"A"):"A";
+    const wb=XLSX.utils.book_new();
+    function addSheets(which){
+      const ch=state[which].channel||{};
+      XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet([{channelId:ch.channelId||"",title:ch.title||"",handle:ch.handle||"",customUrl:ch.customUrl||"",publishedAt:ch.publishedAt||"",subscriberCount:ch.subscriberCount??"",viewCount:ch.viewCount??"",videoCount:ch.videoCount??""}]),`channel_${which}`);
+      XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(rows(which)),`videos_${which}`);
+    }
+    if(sel==="BOTH" && mode==="compare"){ addSheets("A"); addSheets("B"); }
+    else { const which=sel==="B"?"B":"A"; addSheets(which); }
+    XLSX.writeFile(wb,`youtube_analyzer_${sel==="BOTH"?"A_B":sel}.xlsx`);
+  });
+
+  syncQuotaUI();
+  refreshModeUI();
+  if(location.protocol==="file:") showErr("로컬(file://)로 열었습니다. API 도메인(배포 URL)을 입력한 뒤 사용하세요");
+}
+document.addEventListener("DOMContentLoaded",init);
+</script>
+</body></html>
