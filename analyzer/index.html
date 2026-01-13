@@ -1,0 +1,1500 @@
+<!doctype html>
+<html lang="ko" class="h-full">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>YouTube Analyzer</title>
+
+  <!-- Tailwind CDN (no build, no deps) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- SheetJS for XLSX export -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.19.3/dist/xlsx.full.min.js"></script>
+
+  <style>
+    :root{
+      --bg: 10 12 16;
+      --panel: 17 22 30;
+      --panel2: 22 28 38;
+      --text: 235 237 242;
+      --muted: 165 174 189;
+      --border: 44 54 72;
+      --accent: 99 102 241;
+      --danger: 239 68 68;
+      --ok: 34 197 94;
+      --shadow: 0 10px 30px rgba(0,0,0,.35);
+    }
+    [data-theme="light"]{
+      --bg: 247 248 251;
+      --panel: 255 255 255;
+      --panel2: 249 250 251;
+      --text: 17 24 39;
+      --muted: 107 114 128;
+      --border: 226 232 240;
+      --shadow: 0 10px 24px rgba(15,23,42,.10);
+    }
+    html, body { height: 100%; background: rgb(var(--bg)); color: rgb(var(--text)); }
+    .panel { background: rgb(var(--panel)); border: 1px solid rgb(var(--border)); box-shadow: var(--shadow); }
+    .panel2 { background: rgb(var(--panel2)); border: 1px solid rgb(var(--border)); }
+    .muted { color: rgb(var(--muted)); }
+    .btn { background: rgb(var(--panel2)); border: 1px solid rgb(var(--border)); }
+    .btn:hover { filter: brightness(1.08); }
+    .btn-primary { background: rgb(var(--accent)); border: 0; color: white; }
+    .btn-primary:hover { filter: brightness(1.06); }
+    .btn-danger { background: rgb(var(--danger)); border: 0; color: white; }
+    .chip { background: rgba(var(--accent), .12); border: 1px solid rgba(var(--accent), .35); color: rgb(var(--text)); }
+    .input { background: rgba(255,255,255,.04); border: 1px solid rgb(var(--border)); color: rgb(var(--text)); }
+    [data-theme="light"] .input { background: white; }
+    .scrollbar::-webkit-scrollbar{ height:10px; width:10px; }
+    .scrollbar::-webkit-scrollbar-thumb{ background: rgba(255,255,255,.12); border-radius: 999px; }
+    [data-theme="light"] .scrollbar::-webkit-scrollbar-thumb{ background: rgba(15,23,42,.15); }
+    .toast { position: fixed; right: 16px; bottom: 16px; z-index: 50; }
+    .toast > div { background: rgb(var(--panel)); border: 1px solid rgb(var(--border)); box-shadow: var(--shadow); padding: 10px 12px; border-radius: 12px; margin-top: 8px; max-width: 380px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .link { color: rgb(var(--text)); text-decoration: underline; text-decoration-color: rgba(var(--muted),.6); }
+    .link:hover { text-decoration-color: rgba(var(--text),.9); }
+    .tab-active { background: rgba(var(--accent), .20) !important; border-color: rgba(var(--accent), .45) !important; }
+    .pill { background: rgba(255,255,255,.06); border: 1px solid rgb(var(--border)); border-radius: 999px; padding: 2px 10px; font-size: 12px; }
+    [data-theme="light"] .pill { background: rgba(15,23,42,.04); }
+    .modal-backdrop{ position: fixed; inset:0; background: rgba(0,0,0,.55); display:none; z-index: 60; }
+    .modal{ position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%); width: min(920px, 92vw); max-height: 86vh; overflow:auto; display:none; z-index: 70; }
+  </style>
+</head>
+
+<body class="h-full">
+<div class="max-w-[1200px] mx-auto px-4 py-6">
+  <!-- Header -->
+  <div class="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+    <div>
+      <div class="flex items-center gap-3">
+        <h1 class="text-2xl font-bold tracking-tight">YouTube Analyzer</h1>
+        <span class="chip text-xs px-2 py-1 rounded-full">데이터 수집·정리 + GPT용 프롬프트/분석팩 생성</span>
+      </div>
+      <p class="muted text-sm mt-1">앱이 결론/인사이트를 자동 작성하지 않습니다. <span class="font-semibold">데이터와 분석팩/프롬프트</span>만 제공합니다.</p>
+      <p id="fileModeHint" class="muted text-xs mt-1 hidden">로컬(file://)로 열려 있습니다. <span class="font-semibold">API 도메인</span>을 입력해야 채널 호출이 됩니다.</p>
+    </div>
+    <div class="flex items-center gap-2 mt-2 md:mt-0">
+      <button id="btnRoot" class="btn px-3 py-2 rounded-lg text-sm">루트로</button>
+      <button id="btnResetAll" class="btn px-3 py-2 rounded-lg text-sm">초기화</button>
+      <button id="btnTheme" class="btn px-3 py-2 rounded-lg text-sm">라이트</button>
+    </div>
+  </div>
+
+  <!-- API Base -->
+  <div class="panel rounded-2xl p-4 mt-4">
+    <div class="flex flex-col lg:flex-row gap-3 lg:items-center lg:justify-between">
+      <div class="flex-1">
+        <div class="flex items-center gap-2">
+          <div class="text-sm font-semibold">API 도메인</div>
+          <span class="muted text-xs">(로컬에서 열 때 필수)</span>
+        </div>
+        <div class="flex gap-2 mt-2">
+          <input id="apiBase" class="input w-full px-3 py-2 rounded-lg text-sm" placeholder="예: https://your-project.vercel.app" />
+          <button id="btnSaveApiBase" class="btn px-3 py-2 rounded-lg text-sm whitespace-nowrap">저장</button>
+          <button id="btnTestApiBase" class="btn px-3 py-2 rounded-lg text-sm whitespace-nowrap">연결 테스트</button>
+        </div>
+        <div class="muted text-xs mt-2">
+          기본값: 배포에서 열면 자동으로 현재 도메인을 사용합니다. 로컬(file://)이면 위 입력값을 사용합니다.
+        </div>
+      </div>
+      <div class="panel2 rounded-2xl p-3 min-w-[320px]">
+        <div class="text-sm font-semibold">분석 모드</div>
+        <div class="flex gap-3 mt-2 flex-wrap">
+          <label class="flex items-center gap-2 text-sm"><input type="radio" name="mode" value="compare" checked> 비교(채널 A vs B)</label>
+          <label class="flex items-center gap-2 text-sm"><input type="radio" name="mode" value="single"> 단일(채널 A만)</label>
+        </div>
+        <div class="muted text-xs mt-2">* GPT 프롬프트/분석팩의 mode(my/bench/compare)는 2번 탭에서 선택</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Inputs A/B -->
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
+    <!-- A -->
+    <div class="panel rounded-2xl p-4">
+      <div class="flex items-start justify-between gap-3">
+        <div>
+          <div class="text-sm font-semibold">채널 A (내 채널)</div>
+          <div class="muted text-xs mt-1">URL / @handle / 채널ID(UC...) 입력</div>
+        </div>
+        <span id="badgeA" class="chip text-xs px-2 py-1 rounded-full">대기</span>
+      </div>
+      <div class="flex gap-2 mt-3">
+        <input id="inputA" class="input w-full px-3 py-2 rounded-lg text-sm" placeholder="URL / @handle / 채널ID(UC...)" />
+        <button id="btnLoadA" class="btn-primary px-4 py-2 rounded-lg text-sm font-semibold">불러오기</button>
+      </div>
+
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-2 mt-3">
+        <div>
+          <div class="muted text-xs">최근 N개</div>
+          <select id="maxA" class="input w-full px-3 py-2 rounded-lg text-sm mt-1">
+            <option>10</option><option>25</option><option selected>50</option><option>100</option>
+          </select>
+        </div>
+        <div>
+          <div class="muted text-xs">기간(일)</div>
+          <select id="daysA" class="input w-full px-3 py-2 rounded-lg text-sm mt-1">
+            <option>7</option><option selected>30</option><option>90</option><option>365</option>
+          </select>
+        </div>
+        <div>
+          <div class="muted text-xs">쇼츠 기준(초)</div>
+          <select id="shortsA" class="input w-full px-3 py-2 rounded-lg text-sm mt-1">
+            <option selected>60</option><option>120</option>
+          </select>
+        </div>
+        <div>
+          <div class="muted text-xs">지역/언어</div>
+          <select id="localeA" class="input w-full px-3 py-2 rounded-lg text-sm mt-1">
+            <option selected value="KR|ko">KR (ko)</option>
+            <option value="US|en">US (en)</option>
+            <option value="JP|ja">JP (ja)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="flex flex-col md:flex-row md:items-center gap-3 mt-3">
+        <label class="flex items-center gap-2 text-sm"><input id="cacheA" type="checkbox" checked> 캐시 사용(localStorage)</label>
+        <label class="flex items-center gap-2 text-sm"><input id="fallbackA" type="checkbox" checked> URL 변형 대응(search fallback 허용: 최대 100u/호출)</label>
+        <label class="flex items-center gap-2 text-sm"><input id="liteA" type="checkbox"> 쿼터 절약(상세조회 최소화: 통계/길이/카테고리 제외)</label>
+      </div>
+
+      <div class="flex items-center justify-between gap-2 mt-2">
+        <div class="muted text-xs">캐시 만료(시간)</div>
+        <select id="ttlA" class="input px-3 py-2 rounded-lg text-sm">
+          <option>1</option><option>3</option><option selected>6</option><option>12</option><option>24</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- B -->
+    <div class="panel rounded-2xl p-4">
+      <div class="flex items-start justify-between gap-3">
+        <div>
+          <div class="text-sm font-semibold">채널 B (타 채널/벤치)</div>
+          <div class="muted text-xs mt-1">URL / @handle / 채널ID(UC...) 입력</div>
+        </div>
+        <span id="badgeB" class="chip text-xs px-2 py-1 rounded-full">대기</span>
+      </div>
+      <div class="flex gap-2 mt-3">
+        <input id="inputB" class="input w-full px-3 py-2 rounded-lg text-sm" placeholder="URL / @handle / 채널ID(UC...)" />
+        <button id="btnLoadB" class="btn-primary px-4 py-2 rounded-lg text-sm font-semibold">불러오기</button>
+      </div>
+
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-2 mt-3">
+        <div>
+          <div class="muted text-xs">최근 N개</div>
+          <select id="maxB" class="input w-full px-3 py-2 rounded-lg text-sm mt-1">
+            <option>10</option><option>25</option><option selected>50</option><option>100</option>
+          </select>
+        </div>
+        <div>
+          <div class="muted text-xs">기간(일)</div>
+          <select id="daysB" class="input w-full px-3 py-2 rounded-lg text-sm mt-1">
+            <option>7</option><option selected>30</option><option>90</option><option>365</option>
+          </select>
+        </div>
+        <div>
+          <div class="muted text-xs">쇼츠 기준(초)</div>
+          <select id="shortsB" class="input w-full px-3 py-2 rounded-lg text-sm mt-1">
+            <option selected>60</option><option>120</option>
+          </select>
+        </div>
+        <div>
+          <div class="muted text-xs">지역/언어</div>
+          <select id="localeB" class="input w-full px-3 py-2 rounded-lg text-sm mt-1">
+            <option selected value="KR|ko">KR (ko)</option>
+            <option value="US|en">US (en)</option>
+            <option value="JP|ja">JP (ja)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="flex flex-col md:flex-row md:items-center gap-3 mt-3">
+        <label class="flex items-center gap-2 text-sm"><input id="cacheB" type="checkbox" checked> 캐시 사용(localStorage)</label>
+        <label class="flex items-center gap-2 text-sm"><input id="fallbackB" type="checkbox" checked> URL 변형 대응(search fallback 허용: 최대 100u/호출)</label>
+        <label class="flex items-center gap-2 text-sm"><input id="liteB" type="checkbox"> 쿼터 절약(상세조회 최소화: 통계/길이/카테고리 제외)</label>
+      </div>
+
+      <div class="flex items-center justify-between gap-2 mt-2">
+        <div class="muted text-xs">캐시 만료(시간)</div>
+        <select id="ttlB" class="input px-3 py-2 rounded-lg text-sm">
+          <option>1</option><option>3</option><option selected>6</option><option>12</option><option>24</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <!-- Progress + Quota -->
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
+    <div class="panel rounded-2xl p-4">
+      <div class="flex items-center justify-between">
+        <div class="text-sm font-semibold">진행 상태</div>
+        <div class="muted text-xs">경과: <span id="elapsed">0.0s</span></div>
+      </div>
+      <div class="mt-3">
+        <div class="flex items-center justify-between muted text-xs">
+          <div>단계: <span id="stage">대기</span></div>
+          <div>진행률: <span id="progressPct">0%</span></div>
+        </div>
+        <div class="w-full h-2 bg-black/20 rounded-full mt-2 overflow-hidden">
+          <div id="progressBar" class="h-2 rounded-full" style="width:0%; background: rgb(var(--accent));"></div>
+        </div>
+      </div>
+      <div class="mt-3">
+        <div class="muted text-xs mb-2">로그(최근 10개)</div>
+        <div id="logBox" class="panel2 rounded-xl p-3 h-[110px] overflow-auto text-xs scrollbar mono"></div>
+      </div>
+      <div class="mt-2 muted text-xs">* likes/comments는 채널 설정에 따라 비공개면 빈값입니다</div>
+      <div id="runtimeError" class="hidden mt-3 text-xs">
+        <div class="text-red-300 font-semibold">오류 감지</div>
+        <pre id="runtimeErrorText" class="panel2 rounded-xl p-3 mt-2 overflow-auto scrollbar mono"></pre>
+      </div>
+    </div>
+
+    <div class="panel rounded-2xl p-4">
+      <div class="flex items-center justify-between">
+        <div class="text-sm font-semibold">쿼터(앱 추정)</div>
+        <button id="btnQuotaReset" class="btn px-3 py-2 rounded-lg text-sm">오늘치 초기화</button>
+      </div>
+      <div class="grid grid-cols-2 gap-3 mt-3">
+        <div class="panel2 rounded-xl p-3">
+          <div class="muted text-xs">오늘 사용량</div>
+          <div class="text-xl font-bold"><span id="quotaUsed">0</span> u</div>
+        </div>
+        <div class="panel2 rounded-xl p-3">
+          <div class="muted text-xs">총 할당량</div>
+          <div class="flex items-center gap-2 mt-1">
+            <input id="quotaTotal" class="input w-full px-3 py-2 rounded-lg text-sm" type="number" value="10000"/>
+            <span class="muted text-sm">u</span>
+          </div>
+        </div>
+      </div>
+      <div class="muted text-xs mt-3">
+        * YouTube API 쿼터는 프로젝트 전체 기준입니다. 여기는 <span class="font-semibold">이 앱에서 호출한 추정 누적</span>입니다.
+      </div>
+      <div class="mt-3">
+        <div class="muted text-xs mb-2">호출 로그</div>
+        <div id="quotaLog" class="panel2 rounded-xl p-3 h-[110px] overflow-auto text-xs scrollbar mono"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="panel rounded-2xl p-4 mt-4">
+    <div class="flex items-center gap-2 flex-wrap">
+      <button class="tab btn px-3 py-2 rounded-lg text-sm font-semibold tab-active" data-tab="data">1) 데이터 보기</button>
+      <button class="tab btn px-3 py-2 rounded-lg text-sm" data-tab="gpt">2) GPT 분석팩/프롬프트</button>
+      <button class="tab btn px-3 py-2 rounded-lg text-sm" data-tab="export">3) 내보내기</button>
+      <div class="flex-1"></div>
+      <div class="muted text-xs hidden md:block">행 클릭 → 상세 보기</div>
+    </div>
+
+    <!-- Tab: DATA -->
+    <div id="tab-data" class="mt-4">
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div class="panel2 rounded-2xl p-4">
+          <div class="text-sm font-semibold">채널 A 요약</div>
+          <div id="summaryA" class="muted text-sm mt-2">미로드</div>
+        </div>
+        <div class="panel2 rounded-2xl p-4">
+          <div class="text-sm font-semibold">채널 B 요약</div>
+          <div id="summaryB" class="muted text-sm mt-2">미로드</div>
+        </div>
+      </div>
+
+      <div class="panel2 rounded-2xl p-4 mt-4">
+        <div class="flex items-center justify-between gap-3 flex-wrap">
+          <div class="text-sm font-semibold">표 필터/정렬</div>
+          <div class="flex items-center gap-2">
+            <div class="muted text-xs">표 대상</div>
+            <select id="tableTarget" class="input px-3 py-2 rounded-lg text-sm">
+              <option value="A" selected>채널 A</option>
+              <option value="B">채널 B</option>
+              <option value="AB">A+B 합치기</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
+          <div>
+            <div class="muted text-xs">형태</div>
+            <select id="filterType" class="input w-full px-3 py-2 rounded-lg text-sm mt-1">
+              <option value="all" selected>전체</option>
+              <option value="shorts">쇼츠</option>
+              <option value="long">롱폼</option>
+            </select>
+          </div>
+
+          <div class="md:col-span-2">
+            <div class="muted text-xs">조회수(빠른 버튼)</div>
+            <div class="flex flex-wrap gap-2 mt-1">
+              <button class="btn px-3 py-2 rounded-lg text-sm quickViews" data-quick="100000">10만+</button>
+              <button class="btn px-3 py-2 rounded-lg text-sm quickViews" data-quick="500000">50만+</button>
+              <button class="btn px-3 py-2 rounded-lg text-sm quickViews" data-quick="1000000">100만+</button>
+              <button id="btnQuickClear" class="btn px-3 py-2 rounded-lg text-sm">해제</button>
+            </div>
+          </div>
+
+          <div>
+            <div class="muted text-xs">조회수 범위(min/max)</div>
+            <div class="flex gap-2 mt-1">
+              <input id="viewsMin" class="input w-full px-3 py-2 rounded-lg text-sm" placeholder="min" />
+              <input id="viewsMax" class="input w-full px-3 py-2 rounded-lg text-sm" placeholder="max" />
+            </div>
+          </div>
+
+          <div>
+            <div class="muted text-xs">기간 필터(업로드일)</div>
+            <select id="filterDays" class="input w-full px-3 py-2 rounded-lg text-sm mt-1">
+              <option value="all" selected>전체(수집된 범위)</option>
+              <option value="7">최근 7일</option>
+              <option value="30">최근 30일</option>
+              <option value="90">최근 90일</option>
+            </select>
+          </div>
+
+          <div>
+            <div class="muted text-xs">검색(제목/해시태그)</div>
+            <input id="searchText" class="input w-full px-3 py-2 rounded-lg text-sm mt-1" placeholder="예: #연애, 사연, 회사"/>
+          </div>
+
+          <div>
+            <div class="muted text-xs">정렬</div>
+            <select id="sortBy" class="input w-full px-3 py-2 rounded-lg text-sm mt-1">
+              <option value="date_desc" selected>업로드일(최신)</option>
+              <option value="views_desc">조회수(높음)</option>
+              <option value="vpd_desc">조회수/일(높음)</option>
+              <option value="vpd_asc">조회수/일(낮음)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2 mt-4 flex-wrap">
+          <button id="btnApplyFilters" class="btn-primary px-4 py-2 rounded-lg text-sm font-semibold">필터 적용</button>
+          <button id="btnResetFilters" class="btn px-4 py-2 rounded-lg text-sm">필터 초기화</button>
+          <button id="btnCopyTableJson" class="btn px-4 py-2 rounded-lg text-sm">현재 표(JSON) 복사</button>
+          <div class="flex-1"></div>
+          <div class="muted text-xs">표 요약</div>
+          <div class="pill"><span id="countTotal">0</span>개</div>
+          <div class="pill">필터 후 <span id="countFiltered">0</span>개</div>
+        </div>
+      </div>
+
+      <div class="mt-4">
+        <div class="panel2 rounded-2xl p-3 overflow-auto scrollbar">
+          <table class="w-full text-sm">
+            <thead class="text-xs muted">
+              <tr>
+                <th class="text-left py-2 px-2">#</th>
+                <th class="text-left py-2 px-2">제목</th>
+                <th class="text-left py-2 px-2">업로드</th>
+                <th class="text-left py-2 px-2">길이</th>
+                <th class="text-left py-2 px-2">형태</th>
+                <th class="text-right py-2 px-2">조회수</th>
+                <th class="text-right py-2 px-2">조회수/일</th>
+                <th class="text-right py-2 px-2">좋아요</th>
+                <th class="text-right py-2 px-2">댓글</th>
+                <th class="text-left py-2 px-2">카테고리</th>
+                <th class="text-left py-2 px-2">해시태그(#)</th>
+              </tr>
+            </thead>
+            <tbody id="tableBody" class="text-sm"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab: GPT -->
+    <div id="tab-gpt" class="mt-4 hidden">
+      <div class="panel2 rounded-2xl p-4">
+        <div class="flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <div class="text-sm font-semibold">GPT 분석팩/프롬프트 생성</div>
+            <div class="muted text-xs mt-1">앱은 인사이트를 자동 생성하지 않습니다. <span class="font-semibold">팩 + 지시문</span>만 생성합니다.</div>
+          </div>
+          <div class="flex items-center gap-3 flex-wrap">
+            <label class="flex items-center gap-2 text-sm"><input type="radio" name="gptMode" value="my" checked> 내채널 분석용</label>
+            <label class="flex items-center gap-2 text-sm"><input type="radio" name="gptMode" value="bench"> 타채널 벤치마킹용</label>
+            <label class="flex items-center gap-2 text-sm"><input type="radio" name="gptMode" value="compare"> 내 vs 타 비교용</label>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2 mt-4 flex-wrap">
+          <button id="btnCopyPack" class="btn-primary px-4 py-2 rounded-lg text-sm font-semibold">분석팩 복사</button>
+          <button id="btnCopyPrompt" class="btn px-4 py-2 rounded-lg text-sm">GPT 프롬프트 복사</button>
+          <button id="btnCopyBoth" class="btn px-4 py-2 rounded-lg text-sm">프롬프트+분석팩 한번에 복사</button>
+          <div class="flex-1"></div>
+          <button id="btnRefreshGpt" class="btn px-4 py-2 rounded-lg text-sm">새로 생성</button>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
+          <div>
+            <div class="muted text-xs mb-2">GPT 프롬프트(붙여넣기용)</div>
+            <textarea id="gptPrompt" class="input w-full rounded-xl p-3 text-xs mono h-[320px]"></textarea>
+          </div>
+          <div>
+            <div class="muted text-xs mb-2">분석팩(JSON)</div>
+            <textarea id="gptPack" class="input w-full rounded-xl p-3 text-xs mono h-[320px]"></textarea>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab: Export -->
+    <div id="tab-export" class="mt-4 hidden">
+      <div class="panel2 rounded-2xl p-4">
+        <div class="text-sm font-semibold">내보내기</div>
+        <div class="muted text-xs mt-1">현재 필터가 적용된 표 기준으로 내보냅니다.</div>
+
+        <div class="flex items-center gap-2 mt-4 flex-wrap">
+          <button id="btnExportXlsx" class="btn-primary px-4 py-2 rounded-lg text-sm font-semibold">XLSX 내보내기</button>
+          <button id="btnExportCsv" class="btn px-4 py-2 rounded-lg text-sm">CSV 내보내기</button>
+          <div class="flex-1"></div>
+          <div class="muted text-xs">파일명</div>
+          <input id="exportName" class="input px-3 py-2 rounded-lg text-sm" value="youtube_analyzer_export"/>
+        </div>
+
+        <div class="muted text-xs mt-4">
+          * 로컬(file://)에서도 다운로드는 가능합니다. (브라우저 다운로드 정책에 따라 경로 선택/권한이 필요할 수 있음)
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Modal -->
+<div id="modalBackdrop" class="modal-backdrop"></div>
+<div id="modal" class="modal panel rounded-2xl p-4">
+  <div class="flex items-center justify-between gap-3">
+    <div class="text-sm font-semibold">영상 상세</div>
+    <button id="btnCloseModal" class="btn px-3 py-2 rounded-lg text-sm">닫기</button>
+  </div>
+  <div id="modalBody" class="mt-3 text-sm"></div>
+</div>
+
+<!-- Toast -->
+<div id="toast" class="toast"></div>
+
+<script>
+(function(){
+  "use strict";
+
+  // ---------- Safe runtime error surfacing (no-console needed) ----------
+  function showRuntimeError(err){
+    try{
+      const box = document.getElementById("runtimeError");
+      const pre = document.getElementById("runtimeErrorText");
+      if(!box || !pre) return;
+      box.classList.remove("hidden");
+      pre.textContent = String(err && (err.stack || err.message || err) || "Unknown error");
+    }catch(_){}
+  }
+  window.addEventListener("error", (e)=>{ showRuntimeError(e.error || e.message); });
+  window.addEventListener("unhandledrejection", (e)=>{ showRuntimeError(e.reason); });
+
+  // ---------- Helpers ----------
+  const $ = (id)=>document.getElementById(id);
+  const nowIso = ()=>new Date().toISOString();
+  const sleep = (ms)=>new Promise(r=>setTimeout(r,ms));
+
+  function toast(msg, kind){
+    const t = $("toast");
+    const el = document.createElement("div");
+    el.innerHTML = '<div class="text-sm font-semibold">'+(kind==="err"?"오류":"알림")+'</div><div class="muted text-xs mt-1">'+escapeHtml(msg)+'</div>';
+    t.appendChild(el);
+    setTimeout(()=>{ el.remove(); }, 4200);
+  }
+
+  function escapeHtml(s){
+    return String(s ?? "").replace(/[&<>"']/g, m=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;" }[m]));
+  }
+
+  function formatNumber(n){
+    const x = Number(n);
+    if(!isFinite(x)) return "";
+    return x.toLocaleString("ko-KR");
+  }
+
+  function toDate(s){ const d = new Date(s); return isNaN(d.getTime()) ? null : d; }
+
+  function daysSince(iso){
+    const d = toDate(iso);
+    if(!d) return null;
+    const diff = Date.now() - d.getTime();
+    return Math.max(1, Math.floor(diff / (1000*60*60*24)));
+  }
+
+  function parseDurationISO(iso){
+    // ISO8601 duration like PT1H2M3S
+    if(!iso || typeof iso !== "string") return { seconds: null, text: "" };
+    const m = iso.match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/);
+    if(!m) return { seconds: null, text: iso };
+    const h = parseInt(m[1]||"0",10);
+    const mm = parseInt(m[2]||"0",10);
+    const ss = parseInt(m[3]||"0",10);
+    const seconds = h*3600 + mm*60 + ss;
+    const text = h>0 ? String(h).padStart(2,"0")+":"+String(mm).padStart(2,"0")+":"+String(ss).padStart(2,"0")
+                     : String(mm).padStart(2,"0")+":"+String(ss).padStart(2,"0");
+    return { seconds, text };
+  }
+
+  // Hashtags extraction (no Unicode property escapes for max compatibility)
+  function extractHashtags(title, desc){
+    const s = (title||"") + " " + (desc||"");
+    const re = /#[A-Za-z0-9_\u3131-\uD79D]+/g; // includes Hangul Jamo + Hangul syllables
+    const found = s.match(re) || [];
+    const uniq = [];
+    const seen = {};
+    for(const tag of found){
+      const key = tag.toLowerCase();
+      if(seen[key]) continue;
+      seen[key]=true;
+      uniq.push(tag);
+    }
+    return uniq;
+  }
+
+  function tokenizeForKeywords(title, desc){
+    const raw = ((title||"") + " " + (desc||""))
+      .replace(/https?:\/\/\S+/g, " ")
+      .replace(/#[A-Za-z0-9_\u3131-\uD79D]+/g, " ")
+      .replace(/[\r\n\t]/g, " ")
+      .replace(/[^A-Za-z0-9\u3131-\uD79D ]/g, " ")
+      .toLowerCase();
+
+    const tokens = raw.split(/\s+/).filter(Boolean);
+    const stop = new Set([
+      "the","a","an","and","or","to","of","in","on","for","with","is","are","was","were","be","as","at",
+      "this","that","it","you","your","we","our","i","me","my",
+      "영상","오늘","진짜","ㅋㅋ","ㅋㅋㅋ","합니다","하기","하는","해서","했다","있는","없음","없다","있다",
+      "그리고","하지만","그래서","그런데","때문","정말","완전","너무","이거","저거","그거","우리","나","너",
+      "모든","전체","채널","조회수","좋아요","댓글","shorts","쇼츠"
+    ]);
+    const counts = {};
+    for(const t of tokens){
+      if(t.length < 2) continue;
+      if(stop.has(t)) continue;
+      counts[t] = (counts[t]||0)+1;
+    }
+    const pairs = Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,20);
+    return pairs.map(([k,v])=>({ keyword:k, count:v }));
+  }
+
+  function safeJson(obj){
+    return JSON.stringify(obj, null, 2);
+  }
+
+  // ---------- Storage ----------
+  const LS = {
+    get(k, fallback){ try{ const v = localStorage.getItem(k); return v ? JSON.parse(v) : fallback; }catch(_){ return fallback; } },
+    set(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(_){ } },
+    del(k){ try{ localStorage.removeItem(k); }catch(_){ } }
+  };
+
+  // ---------- State ----------
+  const state = {
+    theme: "dark",
+    apiBase: "",
+    mode: "compare",
+    quotaUsed: 0,
+    quotaTotal: 10000,
+    quotaLog: [],
+    timerStart: null,
+    timerHandle: null,
+    channels: {
+      A: null,
+      B: null
+    },
+    datasets: {
+      A: [],
+      B: []
+    },
+    categoryMaps: {
+      A: {},
+      B: {}
+    },
+    filteredRows: [],
+    activeTab: "data"
+  };
+
+  // ---------- UI: Progress + logs ----------
+  function log(msg){
+    const box = $("logBox");
+    const lines = (LS.get("ya_log", []) || []);
+    lines.unshift({ t: Date.now(), msg: String(msg) });
+    while(lines.length > 10) lines.pop();
+    LS.set("ya_log", lines);
+    renderLogs();
+  }
+  function renderLogs(){
+    const box = $("logBox");
+    const lines = LS.get("ya_log", []) || [];
+    box.innerHTML = lines.map(l=>{
+      const t = new Date(l.t).toLocaleTimeString("ko-KR",{hour12:false});
+      return '<div><span class="muted">['+t+']</span> '+escapeHtml(l.msg)+'</div>';
+    }).join("");
+  }
+
+  function setStage(stage, pct){
+    $("stage").textContent = stage;
+    const p = Math.max(0, Math.min(100, Math.floor(pct||0)));
+    $("progressPct").textContent = p + "%";
+    $("progressBar").style.width = p + "%";
+  }
+
+  function startTimer(){
+    state.timerStart = performance.now();
+    if(state.timerHandle) clearInterval(state.timerHandle);
+    state.timerHandle = setInterval(()=>{
+      const sec = (performance.now() - state.timerStart)/1000;
+      $("elapsed").textContent = sec.toFixed(1)+"s";
+    }, 100);
+  }
+  function stopTimer(){
+    if(state.timerHandle) clearInterval(state.timerHandle);
+    state.timerHandle = null;
+  }
+
+  // ---------- Quota ----------
+  function quotaAdd(units, label){
+    const u = Number(units)||0;
+    state.quotaUsed = (state.quotaUsed||0) + u;
+    $("quotaUsed").textContent = String(state.quotaUsed);
+    const logArr = state.quotaLog || [];
+    logArr.unshift({ t: Date.now(), u, label: label||"" });
+    while(logArr.length > 10) logArr.pop();
+    state.quotaLog = logArr;
+    LS.set("ya_quotaUsed", state.quotaUsed);
+    LS.set("ya_quotaLog", state.quotaLog);
+    renderQuotaLog();
+  }
+  function renderQuotaLog(){
+    const box = $("quotaLog");
+    const lines = state.quotaLog || [];
+    box.innerHTML = lines.map(l=>{
+      const t = new Date(l.t).toLocaleTimeString("ko-KR",{hour12:false});
+      return '<div><span class="muted">['+t+']</span> +'+l.u+'u '+escapeHtml(l.label)+'</div>';
+    }).join("");
+  }
+
+  // ---------- API base ----------
+  function getApiBase(){
+    const isFile = location.origin === "null";
+    if(isFile){
+      const saved = (state.apiBase || "").trim();
+      return saved;
+    }
+    return location.origin;
+  }
+
+  function normalizeBase(url){
+    let s = String(url||"").trim();
+    if(!s) return "";
+    // common typos: "https://https//" , "https//"
+    s = s.replace(/^https:\/\/https\/\//i, "https://");
+    s = s.replace(/^http:\/\/http\/\//i, "http://");
+    s = s.replace(/^https:\/\/https:\/\//i, "https://");
+    s = s.replace(/^http:\/\/http:\/\//i, "http://");
+    s = s.replace(/^https\/\//i, "https://");
+    s = s.replace(/^http\/\//i, "http://");
+    // if scheme missing, assume https
+    if(!/^https?:\/\//i.test(s) && /^[A-Za-z0-9.-]+\.[A-Za-z]{2,}/.test(s)){
+      s = "https://" + s;
+    }
+    // remove trailing slashes
+    s = s.replace(/\/+$/,"");
+    return s;
+  }}
+
+  // ---------- Fetch ----------
+  async function apiBundle(channelKey){
+    const isSingle = state.mode === "single";
+    if(isSingle && channelKey === "B") return;
+
+    const input = $(channelKey==="A" ? "inputA" : "inputB").value.trim();
+    if(!input){
+      toast("채널 입력을 해주세요 ("+channelKey+")", "err");
+      return;
+    }
+
+    const base = getApiBase();
+    if(location.origin==="null" && !base){
+      $("fileModeHint").classList.remove("hidden");
+      toast("로컬(file://)에서는 API 도메인을 먼저 입력해야 합니다", "err");
+      return;
+    }
+
+    const max = parseInt($(channelKey==="A" ? "maxA" : "maxB").value, 10);
+    const days = parseInt($(channelKey==="A" ? "daysA" : "daysB").value, 10);
+    const shorts = parseInt($(channelKey==="A" ? "shortsA" : "shortsB").value, 10);
+    const locale = $(channelKey==="A" ? "localeA" : "localeB").value;
+    const [region, lang] = locale.split("|");
+    const useCache = $(channelKey==="A" ? "cacheA" : "cacheB").checked;
+    const allowFallback = $(channelKey==="A" ? "fallbackA" : "fallbackB").checked;
+    const lite = $(channelKey==="A" ? "liteA" : "liteB").checked;
+    const ttlHours = parseInt($(channelKey==="A" ? "ttlA" : "ttlB").value, 10);
+
+    // Badge
+    $(channelKey==="A" ? "badgeA" : "badgeB").textContent = "불러오는 중";
+
+    const cacheKey = "ya_cache_bundle_"+channelKey+"_"+hashKey(input+"|"+max+"|"+days+"|"+region+"|"+lite);
+    if(useCache){
+      const cached = LS.get(cacheKey, null);
+      if(cached && cached.exp && Date.now() < cached.exp && cached.data){
+        log(channelKey+": 캐시 사용");
+        applyBundle(channelKey, cached.data, shorts);
+        $(channelKey==="A" ? "badgeA" : "badgeB").textContent = "캐시";
+        refreshTable();
+        refreshGpt();
+        return;
+      }
+    }
+
+    startTimer();
+    setStage(channelKey+": 채널조회", 5);
+    log(channelKey+": API 호출 시작");
+
+    const url = normalizeBase(base) + "/api/youtube_analyzer"
+      + "?action=bundle"
+      + "&input=" + encodeURIComponent(input)
+      + "&max=" + encodeURIComponent(String(max))
+      + "&days=" + encodeURIComponent(String(days))
+      + "&region=" + encodeURIComponent(region)
+      + "&lang=" + encodeURIComponent(lang)
+      + "&allowSearchFallback=" + encodeURIComponent(allowFallback ? "1" : "0")
+      + "&lite=" + encodeURIComponent(lite ? "1" : "0");
+
+    try{
+      const resp = await fetch(url, { method:"GET" });
+      const data = await resp.json().catch(()=>({}));
+      if(!resp.ok){
+        const msg = (data && data.error && data.error.message) ? data.error.message : ("HTTP "+resp.status);
+        throw new Error(msg);
+      }
+      const units = data && data.quota && data.quota.estimatedUnitsThisCall ? data.quota.estimatedUnitsThisCall : 0;
+      quotaAdd(units, channelKey+" bundle");
+      if(useCache){
+        LS.set(cacheKey, { exp: Date.now() + ttlHours*3600*1000, data });
+      }
+      applyBundle(channelKey, data, shorts);
+      $(channelKey==="A" ? "badgeA" : "badgeB").textContent = "완료";
+      log(channelKey+": 완료 ("+state.datasets[channelKey].length+"개)");
+      setStage("화면 렌더", 100);
+      stopTimer();
+      refreshTable();
+      refreshGpt();
+      toast(channelKey+" 채널 불러오기 완료");
+    }catch(err){
+      stopTimer();
+      $(channelKey==="A" ? "badgeA" : "badgeB").textContent = "오류";
+      setStage("오류", 0);
+      const emsg = String(err && err.message || err);
+      log(channelKey+": 오류 - "+emsg);
+      if(emsg === "Failed to fetch"){
+        log("체크: (1) API 도메인 오타 (예: https://https//...) (2) 배포 도메인에서 /api/youtube_analyzer 가 존재하는지 (3) Vercel env YOUTUBE_API_KEY 설정 후 재배포 (4) 네트워크");
+      }
+      toast(emsg, "err");
+    }
+  }
+
+  function applyBundle(channelKey, bundle, shortsThreshold){
+    // channel
+    state.channels[channelKey] = bundle.channel || null;
+    state.categoryMaps[channelKey] = bundle.categoryMap || {};
+    const vids = (bundle.videos || []).map(v=>{
+      const d = parseDurationISO(v.duration || v.contentDetails_duration || "");
+      const days = daysSince(v.publishedAt);
+      const views = Number(v.viewCount || 0);
+      const vpd = days ? views / days : 0;
+      const tags = extractHashtags(v.title, v.description);
+      const isShort = (d.seconds != null) ? (d.seconds <= shortsThreshold) : null;
+      const kind = isShort===null ? "" : (isShort ? "쇼츠" : "롱폼");
+      return {
+        channelKey,
+        channelId: bundle.channel ? bundle.channel.channelId : "",
+        channelTitle: bundle.channel ? bundle.channel.title : "",
+        videoId: v.videoId,
+        url: v.url || ("https://www.youtube.com/watch?v="+v.videoId),
+        title: v.title || "",
+        publishedAt: v.publishedAt,
+        description: v.description || "",
+        categoryId: v.categoryId || "",
+        categoryName: (bundle.categoryMap && v.categoryId && bundle.categoryMap[v.categoryId]) ? bundle.categoryMap[v.categoryId] : "",
+        durationISO: v.duration || "",
+        durationSeconds: d.seconds,
+        durationText: d.text,
+        type: kind,
+        viewCount: views,
+        viewsPerDay: Math.round(vpd*10)/10,
+        likeCount: (v.likeCount===null || v.likeCount===undefined) ? null : Number(v.likeCount),
+        commentCount: (v.commentCount===null || v.commentCount===undefined) ? null : Number(v.commentCount),
+        hashtags: tags
+      };
+    });
+    state.datasets[channelKey] = vids;
+
+    // summaries
+    renderSummaries();
+  }
+
+  function renderSummaries(){
+    $("summaryA").innerHTML = renderChannelSummary(state.channels.A, "A");
+    $("summaryB").innerHTML = renderChannelSummary(state.channels.B, "B");
+  }
+
+  function renderChannelSummary(ch, key){
+    const isSingle = state.mode==="single";
+    if(isSingle && key==="B") return '<span class="muted">단일 모드</span>';
+    if(!ch) return '<span class="muted">미로드</span>';
+    const subs = (ch.subscriberCount===null || ch.subscriberCount===undefined) ? "" : formatNumber(ch.subscriberCount);
+    const views = formatNumber(ch.viewCount);
+    const vcnt = formatNumber(ch.videoCount);
+    const handle = ch.handle || ch.customUrl || "";
+    const pub = ch.publishedAt ? ch.publishedAt.slice(0,10) : "";
+    const link = ch.url || "";
+    return `
+      <div class="flex flex-col gap-1">
+        <div class="font-semibold">${escapeHtml(ch.title||"")}</div>
+        <div class="muted text-xs">${escapeHtml(handle)} · 개설 ${escapeHtml(pub)}</div>
+        <div class="flex flex-wrap gap-2 mt-1">
+          <span class="pill">구독자 ${subs ? subs : "비공개/불가"}</span>
+          <span class="pill">조회수 ${views}</span>
+          <span class="pill">영상 ${vcnt}</span>
+        </div>
+        <div class="muted text-xs mt-1"><a class="link" href="${escapeHtml(link)}" target="_blank" rel="noreferrer">채널 열기</a></div>
+      </div>
+    `;
+  }
+
+  function hashKey(s){
+    // simple hash (FNV-1a)
+    let h = 2166136261;
+    for(let i=0;i<s.length;i++){
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return (h>>>0).toString(16);
+  }
+
+  // ---------- Filtering / table ----------
+  function getTargetRows(){
+    const t = $("tableTarget").value;
+    if(t==="A") return state.datasets.A || [];
+    if(t==="B") return state.datasets.B || [];
+    return ([]).concat(state.datasets.A||[], state.datasets.B||[]);
+  }
+
+  function currentShortsThresholdForRow(row){
+    // Per-channel threshold based on selectors
+    if(row.channelKey==="A") return parseInt($("shortsA").value, 10);
+    return parseInt($("shortsB").value, 10);
+  }
+
+  function applyFilters(){
+    const rows = getTargetRows().slice();
+    const type = $("filterType").value;
+    const minV = parseInt(($("viewsMin").value||"").replace(/,/g,""),10);
+    const maxV = parseInt(($("viewsMax").value||"").replace(/,/g,""),10);
+    const daysFilter = $("filterDays").value;
+    const q = ($("searchText").value||"").trim().toLowerCase();
+    const sortBy = $("sortBy").value;
+
+    const filtered = rows.filter(r=>{
+      // type
+      if(type==="shorts" && r.type!=="쇼츠") return false;
+      if(type==="long" && r.type!=="롱폼") return false;
+
+      // views range
+      const v = Number(r.viewCount||0);
+      if(isFinite(minV) && !isNaN(minV) && v < minV) return false;
+      if(isFinite(maxV) && !isNaN(maxV) && v > maxV) return false;
+
+      // uploaded within
+      if(daysFilter!=="all"){
+        const d = toDate(r.publishedAt);
+        if(!d) return false;
+        const cutoff = Date.now() - parseInt(daysFilter,10)*86400000;
+        if(d.getTime() < cutoff) return false;
+      }
+
+      // search
+      if(q){
+        const inTitle = (r.title||"").toLowerCase().includes(q);
+        const inTags = (r.hashtags||[]).some(x=>x.toLowerCase().includes(q));
+        if(!inTitle && !inTags) return false;
+      }
+      return true;
+    });
+
+    // sort
+    filtered.sort((a,b)=>{
+      if(sortBy==="views_desc") return (b.viewCount||0) - (a.viewCount||0);
+      if(sortBy==="vpd_desc") return (b.viewsPerDay||0) - (a.viewsPerDay||0);
+      if(sortBy==="vpd_asc") return (a.viewsPerDay||0) - (b.viewsPerDay||0);
+      // date desc
+      return String(b.publishedAt||"").localeCompare(String(a.publishedAt||""));
+    });
+
+    state.filteredRows = filtered;
+    $("countTotal").textContent = String(rows.length);
+    $("countFiltered").textContent = String(filtered.length);
+    renderTable();
+  }
+
+  function renderTable(){
+    const body = $("tableBody");
+    const rows = state.filteredRows || [];
+    if(!rows.length){
+      body.innerHTML = '<tr><td class="py-3 px-2 muted" colspan="11">데이터가 없습니다. 먼저 채널을 불러오고 필터를 적용하세요.</td></tr>';
+      return;
+    }
+    body.innerHTML = rows.map((r, idx)=>{
+      const tags = (r.hashtags||[]);
+      const short = tags.slice(0,3).join(" ");
+      const more = tags.length > 3;
+      const like = (r.likeCount===null) ? "" : formatNumber(r.likeCount);
+      const comm = (r.commentCount===null) ? "" : formatNumber(r.commentCount);
+      const ch = (r.channelKey==="A") ? "A" : "B";
+      return `
+        <tr class="border-t border-white/5 hover:bg-white/5 cursor-pointer" data-idx="${idx}">
+          <td class="py-2 px-2 muted text-xs">${idx+1}</td>
+          <td class="py-2 px-2">
+            <div class="font-semibold">${escapeHtml(r.title)}</div>
+            <div class="muted text-xs mt-1">${ch} · <a class="link" href="${escapeHtml(r.url)}" target="_blank" rel="noreferrer">영상</a></div>
+          </td>
+          <td class="py-2 px-2 muted text-xs">${escapeHtml((r.publishedAt||"").slice(0,10))}</td>
+          <td class="py-2 px-2 muted text-xs">${escapeHtml(r.durationText||"")}</td>
+          <td class="py-2 px-2"><span class="pill">${escapeHtml(r.type||"")}</span></td>
+          <td class="py-2 px-2 text-right">${formatNumber(r.viewCount||0)}</td>
+          <td class="py-2 px-2 text-right">${formatNumber(r.viewsPerDay||0)}</td>
+          <td class="py-2 px-2 text-right">${like}</td>
+          <td class="py-2 px-2 text-right">${comm}</td>
+          <td class="py-2 px-2 muted text-xs">${escapeHtml(r.categoryName||"")}</td>
+          <td class="py-2 px-2 muted text-xs">
+            ${escapeHtml(short)}${more ? ' <button class="btn px-2 py-1 rounded-lg text-xs ml-1 btnMore" data-idx="'+idx+'">더보기</button>' : ''}
+          </td>
+        </tr>
+      `;
+    }).join("");
+
+    // row click
+    body.querySelectorAll("tr[data-idx]").forEach(tr=>{
+      tr.addEventListener("click", (e)=>{
+        // if clicked "더보기", ignore (handled separately)
+        if(e.target && e.target.classList && e.target.classList.contains("btnMore")) return;
+        const i = parseInt(tr.getAttribute("data-idx"),10);
+        openModal(rows[i]);
+      });
+    });
+    body.querySelectorAll(".btnMore").forEach(btn=>{
+      btn.addEventListener("click", (e)=>{
+        e.stopPropagation();
+        const i = parseInt(btn.getAttribute("data-idx"),10);
+        const r = rows[i];
+        toast((r.hashtags||[]).join(" "), "ok");
+      });
+    });
+  }
+
+  function refreshTable(){
+    // default table target based on mode
+    if(state.mode==="single"){
+      $("tableTarget").value = "A";
+      $("tableTarget").disabled = true;
+    }else{
+      $("tableTarget").disabled = false;
+    }
+    applyFilters();
+  }
+
+  // ---------- Modal ----------
+  function openModal(r){
+    if(!r) return;
+    $("modalBackdrop").style.display = "block";
+    $("modal").style.display = "block";
+    const tags = (r.hashtags||[]).join(" ");
+    const like = (r.likeCount===null) ? "비공개/불가" : formatNumber(r.likeCount);
+    const comm = (r.commentCount===null) ? "비공개/불가" : formatNumber(r.commentCount);
+    $("modalBody").innerHTML = `
+      <div class="flex flex-col gap-2">
+        <div class="text-base font-bold">${escapeHtml(r.title)}</div>
+        <div class="muted text-xs">${escapeHtml(r.publishedAt)} · ${escapeHtml(r.type)} · ${escapeHtml(r.durationText||"")}</div>
+        <div class="flex flex-wrap gap-2 mt-1">
+          <span class="pill">조회수 ${formatNumber(r.viewCount||0)}</span>
+          <span class="pill">조회수/일 ${formatNumber(r.viewsPerDay||0)}</span>
+          <span class="pill">좋아요 ${like}</span>
+          <span class="pill">댓글 ${comm}</span>
+          <span class="pill">카테고리 ${escapeHtml(r.categoryName||"")}</span>
+        </div>
+        <div class="mt-2">
+          <div class="muted text-xs mb-1">해시태그</div>
+          <div class="text-sm">${escapeHtml(tags || "없음")}</div>
+        </div>
+        <div class="mt-2">
+          <div class="muted text-xs mb-1">설명(일부)</div>
+          <div class="panel2 rounded-xl p-3 text-xs mono whitespace-pre-wrap max-h-[240px] overflow-auto scrollbar">${escapeHtml((r.description||"").slice(0,2500))}</div>
+        </div>
+        <div class="mt-2">
+          <a class="link text-sm" href="${escapeHtml(r.url)}" target="_blank" rel="noreferrer">YouTube에서 열기</a>
+        </div>
+      </div>
+    `;
+  }
+  function closeModal(){
+    $("modalBackdrop").style.display = "none";
+    $("modal").style.display = "none";
+  }
+
+  // ---------- GPT pack / prompt ----------
+  function buildPack(mode){
+    // mode: my, bench, compare
+    const filters = {
+      tableTarget: $("tableTarget").value,
+      filterType: $("filterType").value,
+      viewsMin: $("viewsMin").value || "",
+      viewsMax: $("viewsMax").value || "",
+      filterDays: $("filterDays").value,
+      searchText: $("searchText").value || "",
+      sortBy: $("sortBy").value,
+      shortsThresholdA: parseInt($("shortsA").value,10),
+      shortsThresholdB: parseInt($("shortsB").value,10),
+      collected: {
+        A: { max: parseInt($("maxA").value,10), days: parseInt($("daysA").value,10) },
+        B: { max: parseInt($("maxB").value,10), days: parseInt($("daysB").value,10) }
+      }
+    };
+
+    const rows = (state.filteredRows||[]);
+    const keywordSummary = (() => {
+      const tgt = rows.slice(0,200); // cap for speed
+      const joinedTitle = tgt.map(r=>r.title||"").join(" ");
+      const joinedDesc = tgt.map(r=>(r.description||"").slice(0,300)).join(" ");
+      return tokenizeForKeywords(joinedTitle, joinedDesc);
+    })();
+
+    function topBy(list, keyFn, n){
+      const copy = list.slice();
+      copy.sort((a,b)=>keyFn(b)-keyFn(a));
+      return copy.slice(0,n);
+    }
+    function bottomBy(list, keyFn, n){
+      const copy = list.slice();
+      copy.sort((a,b)=>keyFn(a)-keyFn(b));
+      return copy.slice(0,n);
+    }
+
+    const topByViews = topBy(rows, r=>Number(r.viewCount||0), 10);
+    const topByVPD = topBy(rows, r=>Number(r.viewsPerDay||0), 10);
+    const bottomByVPD = bottomBy(rows, r=>Number(r.viewsPerDay||0), 10);
+
+    // pack schema
+    const pack = {
+      meta: {
+        generatedAt: nowIso(),
+        mode: mode,
+        filters
+      },
+      channel: null,
+      channels: undefined, // used only for compare
+      videos: rows.map(r=>({
+        channelKey: r.channelKey,
+        channelTitle: r.channelTitle,
+        videoId: r.videoId,
+        title: r.title,
+        publishedAt: r.publishedAt,
+        duration: r.durationISO,
+        durationSeconds: r.durationSeconds,
+        viewCount: r.viewCount,
+        viewsPerDay: r.viewsPerDay,
+        likeCount: r.likeCount,
+        commentCount: r.commentCount,
+        categoryId: r.categoryId,
+        categoryName: r.categoryName,
+        hashtags: r.hashtags || [],
+        url: r.url
+      })),
+      topVideos: {
+        byViews: topByViews.map(minVideo),
+        byViewsPerDay: topByVPD.map(minVideo)
+      },
+      bottomVideos: bottomByVPD.map(minVideo),
+      keywordSummary,
+      notes: "공개 데이터 한계: CTR/유지율/시청지속시간/노출수 등 비공개 지표는 불가. like/comment는 채널 설정에 따라 비공개면 빈값."
+    };
+
+    function minVideo(r){
+      return {
+        channelKey: r.channelKey,
+        videoId: r.videoId,
+        title: r.title,
+        publishedAt: r.publishedAt,
+        viewCount: r.viewCount,
+        viewsPerDay: r.viewsPerDay,
+        url: r.url
+      };
+    }
+
+    if(mode==="my"){
+      pack.channel = state.channels.A || null;
+      delete pack.channels;
+    }else if(mode==="bench"){
+      pack.channel = state.channels.B || null;
+      delete pack.channels;
+    }else{
+      // compare
+      pack.channels = { A: state.channels.A || null, B: state.channels.B || null };
+      pack.channel = null;
+    }
+    return pack;
+  }
+
+  function buildPrompt(mode){
+    const baseRules = [
+      "너는 “유튜브 데이터 리서처 + 쇼츠 성장 분석가”다.",
+      "아래 ‘분석팩(JSON)’만 근거로, 공개 데이터로 가능한 범위에서만 분석해라.",
+      "CTR/유지율/시청지속시간/노출수 등 비공개 지표는 ‘불가’로 명확히 표기하고 추정하지 마라.",
+      "앱이 만든 결론을 믿지 말고, 데이터에서 근거를 찾아라.",
+      "출력은 Markdown으로."
+    ];
+
+    const tasksMy = [
+      "1) 채널 현황 요약(공개 지표 기반)",
+      "2) 업로드/조회수/조회수-일 분포 관찰(근거 숫자 포함)",
+      "3) 제목/해시태그 패턴 10개(근거 예시 링크 포함)",
+      "4) 2주 실행안 10개(실행 순서 포함)",
+      "5) 제목 템플릿 20개 + 훅 20개(너무 비슷한 문장 반복 금지)"
+    ];
+    const tasksBench = [
+      "1) 벤치 채널의 ‘잘 먹히는 제목/해시태그’ 규칙 10개(근거 예시 링크 포함)",
+      "2) 조회수-일 상위 Top 10 영상 공통점 10개(데이터 근거)",
+      "3) 내 채널에 이식 가능한 포맷 10개(피해야 할 포인트 포함)",
+      "4) 2주 실행안 10개(벤치 규칙을 반영)"
+    ];
+    const tasksCompare = [
+      "1) A vs B: 업로드 주기/조회수/조회수-일 비교(표로)",
+      "2) B 승리 규칙 10개(데이터 근거 포함)",
+      "3) A의 즉시 개선 포인트 10개(데이터 근거 포함)",
+      "4) 2주 실행안 10개(실행 순서 + 측정 방법 포함)"
+    ];
+
+    const tasks = mode==="my" ? tasksMy : (mode==="bench" ? tasksBench : tasksCompare);
+
+    const header = baseRules.join("\n");
+    const body = tasks.join("\n");
+    const tail = [
+      "",
+      "=== 분석팩(JSON) ===",
+      "(아래에 내가 붙여넣는 JSON을 그대로 읽고 분석해라)"
+    ].join("\n");
+
+    return header + "\n\n" + body + "\n" + tail;
+  }
+
+  function refreshGpt(){
+    const mode = document.querySelector('input[name="gptMode"]:checked')?.value || "my";
+    $("gptPrompt").value = buildPrompt(mode);
+    $("gptPack").value = safeJson(buildPack(mode));
+  }
+
+  // ---------- Export ----------
+  function rowsToExport(){
+    const rows = state.filteredRows || [];
+    return rows.map(r=>({
+      channelKey: r.channelKey,
+      channelTitle: r.channelTitle,
+      videoId: r.videoId,
+      title: r.title,
+      publishedAt: r.publishedAt,
+      duration: r.durationText,
+      type: r.type,
+      viewCount: r.viewCount,
+      viewsPerDay: r.viewsPerDay,
+      likeCount: r.likeCount,
+      commentCount: r.commentCount,
+      categoryName: r.categoryName,
+      hashtags: (r.hashtags||[]).join(" "),
+      url: r.url
+    }));
+  }
+
+  function exportCsv(){
+    const name = ($("exportName").value||"export").trim() || "export";
+    const rows = rowsToExport();
+    if(!rows.length){ toast("내보낼 데이터가 없습니다", "err"); return; }
+    const headers = Object.keys(rows[0]);
+    const lines = [headers.join(",")];
+    for(const row of rows){
+      const vals = headers.map(h=>{
+        const v = row[h];
+        const s = (v===null||v===undefined) ? "" : String(v).replace(/"/g,'""');
+        return '"' + s + '"';
+      });
+      lines.push(vals.join(","));
+    }
+    const blob = new Blob([lines.join("\n")], { type:"text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = name + ".csv";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    toast("CSV 내보내기 완료");
+  }
+
+  function exportXlsx(){
+    const name = ($("exportName").value||"export").trim() || "export";
+    const rows = rowsToExport();
+    if(!rows.length){ toast("내보낼 데이터가 없습니다", "err"); return; }
+    if(!window.XLSX){
+      toast("SheetJS 로딩 실패(인터넷 확인)", "err");
+      return;
+    }
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "videos");
+    XLSX.writeFile(wb, name + ".xlsx");
+    toast("XLSX 내보내기 완료");
+  }
+
+  // ---------- Copy ----------
+  async function copyText(txt){
+    try{
+      await navigator.clipboard.writeText(txt);
+      toast("복사 완료");
+    }catch(_){
+      // fallback
+      const ta = document.createElement("textarea");
+      ta.value = txt;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+      toast("복사 완료");
+    }
+  }
+
+  // ---------- Tabs ----------
+  function setTab(name){
+    state.activeTab = name;
+    ["data","gpt","export"].forEach(t=>{
+      const el = $("tab-"+t);
+      if(t===name) el.classList.remove("hidden");
+      else el.classList.add("hidden");
+    });
+    document.querySelectorAll(".tab").forEach(btn=>{
+      const on = btn.getAttribute("data-tab")===name;
+      btn.classList.toggle("tab-active", on);
+      btn.classList.toggle("font-semibold", on);
+    });
+    if(name==="gpt") refreshGpt();
+  }
+
+  // ---------- Theme ----------
+  function applyTheme(){
+    document.documentElement.setAttribute("data-theme", state.theme==="light" ? "light" : "dark");
+    $("btnTheme").textContent = state.theme==="light" ? "다크" : "라이트";
+  }
+
+  // ---------- Init ----------
+  function init(){
+    // default: dark
+    state.theme = LS.get("ya_theme", "dark");
+    state.apiBase = LS.get("ya_apiBase", "");
+    state.quotaUsed = LS.get("ya_quotaUsed", 0);
+    state.quotaLog = LS.get("ya_quotaLog", []);
+    state.quotaTotal = LS.get("ya_quotaTotal", 10000);
+
+    $("apiBase").value = state.apiBase || "";
+    $("quotaUsed").textContent = String(state.quotaUsed);
+    $("quotaTotal").value = String(state.quotaTotal);
+    renderQuotaLog();
+    renderLogs();
+
+    // file mode hint
+    if(location.origin==="null"){
+      $("fileModeHint").classList.remove("hidden");
+    }
+
+    // default disable B in single mode
+    setModeFromRadios();
+
+    applyTheme();
+    refreshTable();
+    refreshGpt();
+  }
+
+  function setModeFromRadios(){
+    const m = document.querySelector('input[name="mode"]:checked')?.value || "compare";
+    state.mode = m;
+    if(m==="single"){
+      // disable B controls
+      ["inputB","btnLoadB","maxB","daysB","shortsB","localeB","cacheB","fallbackB","liteB","ttlB"].forEach(id=>{
+        const el = $(id); if(el) el.disabled = true;
+      });
+      $("badgeB").textContent = "단일";
+      $("summaryB").textContent = "단일 모드";
+      $("tableTarget").value = "A";
+      $("tableTarget").disabled = true;
+    }else{
+      ["inputB","btnLoadB","maxB","daysB","shortsB","localeB","cacheB","fallbackB","liteB","ttlB"].forEach(id=>{
+        const el = $(id); if(el) el.disabled = false;
+      });
+      $("tableTarget").disabled = false;
+      if($("badgeB").textContent==="단일") $("badgeB").textContent="대기";
+      renderSummaries();
+    }
+  }
+
+  // ---------- Wire events (DOMContentLoaded safe) ----------
+  document.addEventListener("DOMContentLoaded", ()=>{
+    try{
+      init();
+
+      $("btnRoot").addEventListener("click", ()=>{
+        const base = getApiBase() || location.origin;
+        if(base && base!=="null") window.location.href = normalizeBase(base) + "/";
+        else window.location.href = "/";
+      });
+
+      $("btnResetAll").addEventListener("click", ()=>{
+        if(!confirm("로컬 저장(캐시/설정/쿼터)을 모두 초기화할까요?")) return;
+        Object.keys(localStorage).filter(k=>k.startsWith("ya_")).forEach(k=>localStorage.removeItem(k));
+        location.reload();
+      });
+
+      $("btnTheme").addEventListener("click", ()=>{
+        state.theme = (state.theme==="light") ? "dark" : "light";
+        LS.set("ya_theme", state.theme);
+        applyTheme();
+      });
+
+      $("btnSaveApiBase").addEventListener("click", ()=>{
+        state.apiBase = normalizeBase($("apiBase").value);
+        $("apiBase").value = state.apiBase;
+        LS.set("ya_apiBase", state.apiBase);
+        toast("API 도메인 저장 완료");
+      });
+
+      $("btnTestApiBase").addEventListener("click", async ()=>{
+        const base = normalizeBase($("apiBase").value);
+        if(!base){
+          toast("API 도메인을 먼저 입력/저장해주세요", "err");
+          return;
+        }
+        const testUrl = base + "/api/youtube_analyzer?action=ping";
+        log("API 연결 테스트: " + testUrl);
+        try{
+          const r = await fetch(testUrl, { method:"GET" });
+          const j = await r.json().catch(()=>({}));
+          if(!r.ok){
+            const msg = (j && j.error && j.error.message) ? j.error.message : ("HTTP " + r.status);
+            throw new Error(msg);
+          }
+          toast("연결 성공 ✓", "ok");
+        }catch(e){
+          const msg = (e && e.message) ? e.message : String(e);
+          toast("연결 실패: " + msg, "err");
+          if(msg === "Failed to fetch"){
+            log("원인 후보: (1) API 도메인 오타 (2) /api/youtube_analyzer 배포 안됨 (3) CORS 차단 (4) 네트워크/DNS");
+          }
+        }
+      });
+
+
+      document.querySelectorAll('input[name="mode"]').forEach(r=>{
+        r.addEventListener("change", ()=>{
+          setModeFromRadios();
+          refreshTable();
+          refreshGpt();
+        });
+      });
+
+      $("btnLoadA").addEventListener("click", ()=>apiBundle("A"));
+      $("btnLoadB").addEventListener("click", ()=>apiBundle("B"));
+
+      $("btnQuotaReset").addEventListener("click", ()=>{
+        state.quotaUsed = 0;
+        state.quotaLog = [];
+        LS.set("ya_quotaUsed", 0);
+        LS.set("ya_quotaLog", []);
+        $("quotaUsed").textContent = "0";
+        renderQuotaLog();
+        toast("오늘치 초기화 완료");
+      });
+
+      $("quotaTotal").addEventListener("change", ()=>{
+        const v = parseInt($("quotaTotal").value,10);
+        state.quotaTotal = isFinite(v) && v>0 ? v : 10000;
+        $("quotaTotal").value = String(state.quotaTotal);
+        LS.set("ya_quotaTotal", state.quotaTotal);
+      });
+
+      document.querySelectorAll(".tab").forEach(btn=>{
+        btn.addEventListener("click", ()=> setTab(btn.getAttribute("data-tab")));
+      });
+
+      $("btnApplyFilters").addEventListener("click", ()=> { applyFilters(); refreshGpt(); });
+      $("btnResetFilters").addEventListener("click", ()=>{
+        $("filterType").value="all";
+        $("viewsMin").value="";
+        $("viewsMax").value="";
+        $("filterDays").value="all";
+        $("searchText").value="";
+        $("sortBy").value="date_desc";
+        applyFilters(); refreshGpt();
+      });
+
+      document.querySelectorAll(".quickViews").forEach(btn=>{
+        btn.addEventListener("click", ()=>{
+          $("viewsMin").value = btn.getAttribute("data-quick");
+          $("viewsMax").value = "";
+          applyFilters(); refreshGpt();
+        });
+      });
+      $("btnQuickClear").addEventListener("click", ()=>{
+        $("viewsMin").value = "";
+        $("viewsMax").value = "";
+        applyFilters(); refreshGpt();
+      });
+
+      $("tableTarget").addEventListener("change", ()=>{ applyFilters(); refreshGpt(); });
+
+      $("btnCopyTableJson").addEventListener("click", ()=>{
+        const rows = state.filteredRows || [];
+        copyText(safeJson(rows));
+      });
+
+      // GPT buttons
+      document.querySelectorAll('input[name="gptMode"]').forEach(r=>{
+        r.addEventListener("change", refreshGpt);
+      });
+      $("btnRefreshGpt").addEventListener("click", refreshGpt);
+      $("btnCopyPack").addEventListener("click", ()=> copyText($("gptPack").value || ""));
+      $("btnCopyPrompt").addEventListener("click", ()=> copyText($("gptPrompt").value || ""));
+      $("btnCopyBoth").addEventListener("click", ()=>{
+        const txt = ($("gptPrompt").value||"") + "\n\n" + ($("gptPack").value||"");
+        copyText(txt);
+      });
+
+      // export
+      $("btnExportCsv").addEventListener("click", exportCsv);
+      $("btnExportXlsx").addEventListener("click", exportXlsx);
+
+      // modal
+      $("btnCloseModal").addEventListener("click", closeModal);
+      $("modalBackdrop").addEventListener("click", closeModal);
+
+      // initial table render
+      applyFilters();
+
+      toast("준비 완료");
+    }catch(err){
+      showRuntimeError(err);
+    }
+  });
+
+})();
+</script>
+</body>
+</html>
